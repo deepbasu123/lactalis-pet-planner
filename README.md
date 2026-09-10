@@ -7,19 +7,21 @@ Planners view a traffic-light supply grid for the 11 OAK and PAULS flavoured-mil
 ## Architecture
 
 ```
-Single Databricks App (deep-test-1)
+Single Databricks App
   React (Vite) frontend     branded UI, editable grids, Genie panel
         | REST/JSON
   FastAPI backend            stock + capacity engine; reads/writes UC via SQL warehouse
         | Databricks SDK statement execution
-  Unity Catalog: deep_test_1_catalog.lactalis_pet_planner    base tables + projection_snapshot
+  Unity Catalog: <catalog>.<schema>    base tables + projection_snapshot
         |
   Genie Space over PET tables    embedded chat via Conversation API
 ```
 
+`<catalog>` and `<schema>` are chosen at deploy time (`--catalog` / `--schema`); nothing is hard-coded to one workspace.
+
 The entire app is one deployable unit. All planning logic lives in the FastAPI backend (Python + pandas). All durable data lives in Unity Catalog Delta tables. The engine runs live on each user interaction so edits recolour the grid in real time. `projection_snapshot` is written back to UC after each save so Genie can reason about stock health using the latest computed values.
 
-## Data model (Unity Catalog, `deep_test_1_catalog.lactalis_pet_planner`)
+## Data model (Unity Catalog, `<catalog>.<schema>`)
 
 | Table | Rows | Notes |
 |---|---|---|
@@ -56,50 +58,61 @@ To run against a live workspace locally, set:
 
 ```bash
 export PET_LIVE=1
-export DATABRICKS_CONFIG_PROFILE=deep-test-1
+export DATABRICKS_CONFIG_PROFILE=<your-cli-profile>
 export DATABRICKS_WAREHOUSE_ID=<your-warehouse-id>
-export PET_CATALOG=deep_test_1_catalog
-export PET_SCHEMA=lactalis_pet_planner
+export PET_CATALOG=<your-catalog>
+export PET_SCHEMA=<your-schema>
 ```
 
 then restart the backend.
 
-## Deploy to Databricks Apps
+## Deploy to your own Databricks workspace
 
-Prerequisites: Databricks CLI authenticated as `deep-test-1`, Node 18+ (for the frontend build).
+The app is designed to drop into any Unity Catalog workspace. One command builds the frontend, provisions the schema, tables, synthetic data, and a Genie space, deploys the app, and grants the app service principal everything it needs.
 
-```bash
-python deploy.py --profile deep-test-1
-```
+**Prerequisites**
 
-To skip the frontend build if `frontend/dist` is already fresh:
+- **Databricks CLI** (v0.230+) authenticated to your workspace: `databricks auth login --profile <name>`. The signed-in user needs permission to create apps and grant Unity Catalog privileges.
+- A **Unity Catalog catalog** you can create schemas in (`CREATE SCHEMA`). Pass it with `--catalog`.
+- A **running SQL warehouse** (any size). The script auto-selects one, or pass `--warehouse-id`.
+- **Genie** enabled in the workspace (for the embedded chat panel).
+- **Python 3.11+** and **Node 18+** on the machine running the deploy (for the frontend build). Then: `python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`.
 
-```bash
-python deploy.py --profile deep-test-1 --skip-frontend-build
-```
-
-To use a specific SQL warehouse instead of auto-selection:
+**Deploy**
 
 ```bash
-python deploy.py --profile deep-test-1 --warehouse-id <id>
+python deploy.py --profile <your-cli-profile> --catalog <your-catalog>
 ```
 
-The script is fully idempotent. Running it again overwrites the data and re-deploys the app without duplicating any resources.
+That is the whole thing. `--schema` (default `lactalis_pet_planner`) and `--app-name` (default `lactalis-pet-planner`) are optional:
+
+```bash
+python deploy.py --profile prod --catalog main --schema pet_planner --app-name pet-planner
+```
+
+Other options:
+
+```bash
+python deploy.py --profile <p> --catalog <c> --warehouse-id <id>   # pin a warehouse
+python deploy.py --profile <p> --catalog <c> --skip-frontend-build # reuse frontend/dist
+```
+
+The script is fully idempotent: running it again overwrites the data and re-deploys the app without duplicating resources. When it finishes it prints the app URL.
 
 ## Deploy steps
 
-1. Build the React frontend (`npm ci && npm run build` in `frontend/`).
-2. Create schema `deep_test_1_catalog.lactalis_pet_planner` (IF NOT EXISTS).
-3. Create 7 Delta tables (IF NOT EXISTS).
+1. Build the React frontend (`npm ci && npm run build` in `frontend/`). The built assets are force-included in the workspace sync (they are gitignored, so a plain sync would skip them).
+2. Create schema `<catalog>.<schema>` if it does not exist.
+3. `CREATE OR REPLACE` the 7 Delta tables with the correct schemas.
 4. Load 11-SKU x 52-week synthetic data (TRUNCATE + INSERT).
 5. Compute `projection_snapshot` via the supply engine and load it.
-6. Create or reuse the Genie space by title ("Lactalis PET Line Planner").
-7. Write resolved `app.yaml` with the real warehouse and Genie space IDs.
+6. Create or reuse the Genie space (title is scoped to the schema).
+7. Write resolved `app.yaml` with the real catalog, schema, warehouse, and Genie space IDs.
 8. Create the Databricks App record (or verify it exists).
 9. Sync source code to the workspace and deploy.
 10. Grant the app service principal:
-    - `USE CATALOG` on `deep_test_1_catalog`
-    - `USE SCHEMA + SELECT + MODIFY` on `deep_test_1_catalog.lactalis_pet_planner`
+    - `USE CATALOG` on `<catalog>`
+    - `USE SCHEMA + SELECT + MODIFY` on `<catalog>.<schema>`
     - `CAN_USE` on the SQL warehouse
     - `CAN RUN` on the Genie space
 11. Poll `GET /api/health` until `{"status":"ok"}` or 60 s timeout.

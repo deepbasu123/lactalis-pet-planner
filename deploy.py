@@ -4,7 +4,7 @@ deploy.py -- Idempotent deploy for the Lactalis PET Line Planner Databricks App.
 
 Steps (in order, each logged):
   1. Build the React frontend (npm ci && npm run build in frontend/).
-  2. Create schema deep_test_1_catalog.lactalis_pet_planner (IF NOT EXISTS).
+  2. Create schema <catalog>.<schema> (from --catalog / --schema).
   3. CREATE OR REPLACE the 7 Delta tables with correct schemas.
   4. Load synthetic data: TRUNCATE + INSERT from data_gen.generate().
   5. Compute projection_snapshot via service.build_supply() and load it.
@@ -17,7 +17,8 @@ Steps (in order, each logged):
   11. Health-check GET /api/health until ok (60 s timeout).
 
 Usage:
-  python deploy.py [--profile deep-test-1] [--warehouse-id <id>]
+  python deploy.py --profile <cli-profile> --catalog <uc-catalog>
+                   [--schema <schema>] [--app-name <name>] [--warehouse-id <id>]
 
 Re-runnable: schema uses IF NOT EXISTS; tables use CREATE OR REPLACE; data uses
 reuse.  Running deploy.py a second time overwrites the data and re-deploys
@@ -52,8 +53,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from backend.db import run_sql           # noqa: E402  (after path setup)
 from backend.data_gen import generate    # noqa: E402
 
-CATALOG = "deep_test_1_catalog"
-SCHEMA = "lactalis_pet_planner"
+# Deploy targets. Module-level so the pure DDL / app.yaml helpers can read them;
+# main() reassigns them from --catalog / --schema / --app-name before any step
+# runs. Defaults are workspace-neutral so a customer can deploy with just
+# `python deploy.py --profile <their-profile> --catalog <their-catalog>`.
+CATALOG = "main"                 # UC catalog to deploy into (override per workspace)
+SCHEMA = "lactalis_pet_planner"  # schema created within the catalog
 APP_NAME = "lactalis-pet-planner"
 APP_DESCRIPTION = (
     "Lactalis PET Line weekly supply and production planner "
@@ -505,8 +510,8 @@ def step_grant_sp(w, warehouse_id: str, genie_space_id: str, profile: str) -> No
     """Step 10: Grant the app SP all required permissions.
 
     Grants applied:
-      - USE CATALOG on deep_test_1_catalog  (UC)
-      - USE SCHEMA + SELECT + MODIFY on deep_test_1_catalog.lactalis_pet_planner  (UC)
+      - USE CATALOG on <catalog>  (UC)
+      - USE SCHEMA + SELECT + MODIFY on <catalog>.<schema>  (UC)
       - CAN_USE on the SQL warehouse  (permissions API)
       - CAN RUN on the Genie space  (permissions API -- best-effort)
 
@@ -735,13 +740,32 @@ def step_health_check(app_url: str, w=None, timeout_s: int = 60) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    global CATALOG, SCHEMA, APP_NAME
+
     parser = argparse.ArgumentParser(
         description="Deploy the Lactalis PET Line Planner to Databricks Apps."
     )
     parser.add_argument(
         "--profile",
-        default="deep-test-1",
-        help="Databricks CLI profile to use (default: deep-test-1).",
+        required=True,
+        help="Databricks CLI profile to deploy with (required). Create one with "
+             "`databricks auth login --profile <name>`.",
+    )
+    parser.add_argument(
+        "--catalog",
+        default=CATALOG,
+        help="Unity Catalog catalog to deploy into (default: %(default)s). Must "
+             "already exist and you must have CREATE SCHEMA on it.",
+    )
+    parser.add_argument(
+        "--schema",
+        default=SCHEMA,
+        help="Schema created/used within the catalog (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--app-name",
+        default=APP_NAME,
+        help="Databricks App name (default: %(default)s).",
     )
     parser.add_argument(
         "--warehouse-id",
@@ -757,6 +781,11 @@ def main() -> None:
         help="Skip npm ci && npm run build (use existing frontend/dist).",
     )
     args = parser.parse_args()
+
+    # Thread the CLI targets through the module globals the helpers read.
+    CATALOG = args.catalog
+    SCHEMA = args.schema
+    APP_NAME = args.app_name
 
     log.info("=== Lactalis PET Line Planner -- Deploy ===")
     log.info("Profile: %s  |  Catalog: %s  |  Schema: %s  |  App: %s",
