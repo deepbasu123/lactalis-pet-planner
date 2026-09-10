@@ -57,22 +57,22 @@ _PLAN_BASE: dict[str, float] = {
     # sum = 450 000
 }
 
-# Demand base sits below plan so most SKUs run healthy (green/blue).
-# Per-SKU prod scales and opening multipliers engineer specific bands.
-_DEMAND_SCALE: float = 0.88
+# Demand base at 0.96 of plan so production is barely above demand.
+# With a small 4 %/week surplus, healthy SKUs sit in the 1-2 week
+# cover range (green/light_blue) and maintenance dips create amber.
+# Two high-opening SKUs provide the dark_blue mass; "61747" over-produces
+# into the black band from mid-horizon.
+_DEMAND_SCALE: float = 0.96
 
 # Per-SKU production scale applied to every week's qty.
 #   < 1.0  -> systematic shortage (amber -> red)
-#   = 1.0  -> normal (random variation drives green/blue)
-#   > 1.0  -> over-production: stock accumulates, eventually fires black
-#
-# "61747" over-produces (1.25): combined with a moderate opening, surplus
-# builds until stock exceeds the max_cover demand window (black) from
-# mid-horizon onwards, then stays there for ~30+ weeks.
+#   = 1.0  -> normal (4 % surplus vs demand drives green -> light_blue
+#              -> dark_blue over the 52-week horizon)
+#   > 1.0  -> over-production: "60444" recovers cleanly; "61747" builds black.
 _PROD_SCALE: dict[str, float] = {
-    "60444":  1.00,   # normal; exactly 1 dark_red in week 2 then recovery
+    "60444":  1.10,   # extra surplus ensures week-3 recovery after dark_red
     "61108":  1.00,
-    "61747":  1.25,   # over-production -> black from mid-horizon
+    "61747":  1.35,   # strong overproduction -> black from mid-horizon
     "61924":  1.00,
     "70526":  1.00,
     "70535":  1.00,
@@ -83,27 +83,31 @@ _PROD_SCALE: dict[str, float] = {
     "230550": 0.68,   # persistent shortage -> ~47 red weeks
 }
 
-# Opening stock expressed as multiples of the first-week forecast.
-#   "60444"  1.05  -> opens just above week-1 demand: week 1 = amber,
-#                    week 2 stocks out (hi=2 <= reaction_window=3 -> dark_red),
-#                    then production kicks in and recovery begins.
-#   "61747"  8.00  -> moderate initial buffer; over-production surplus
-#                    accumulates and pushes stock above the max_cover
-#                    demand window around week 19 (black band ~weeks 19-52).
-#   shortage SKUs  -> low opening so shortage starts in weeks 2-4
-#   healthy SKUs   -> 3.5x for a balanced green/light_blue/dark_blue split
+# Opening stock as a multiple of the first-week forecast.
+#
+# "60444"  1.05  -> opens just above week-1 demand: week 1 = amber,
+#                   week 2 stocks out (hi=2 <= reaction_window -> dark_red),
+#                   prod_scale=1.10 guarantees week-3 recovery.
+# "61108"  6.0   -> dedicated dark_blue: starts at ~5x cover and stays
+#                   there for most of the year.
+# "61747"  7.0   -> massive initial buffer + strong surplus accumulates
+#                   past max_cover demand window (black) from mid-horizon.
+# "70526"  6.0   -> second dedicated dark_blue SKU.
+# green SKUs     -> 3.0x: starts at 1x cover (green), maint dips create
+#                   amber when close falls below weekly demand.
+# shortage SKUs  -> 2.5x: avoids week-2 dark_red; shortfall hits week 4.
 _OPENING_MULT: dict[str, float] = {
     "60444":  1.05,
-    "61108":  3.5,
-    "61747":  8.0,
-    "61924":  3.5,
-    "70526":  3.5,
-    "70535":  3.5,
-    "228500": 3.5,
+    "61108":  6.0,
+    "61747":  7.0,
+    "61924":  3.0,
+    "70526":  6.0,
+    "70535":  3.0,
+    "228500": 2.5,   # lower opening: week-2 dip creates early amber; maint dips also amber
     "228510": 2.5,
-    "230150": 3.5,
-    "230540": 2.0,
-    "230550": 2.0,
+    "230150": 2.5,   # same as 228500 — second amber-generating SKU
+    "230540": 2.5,
+    "230550": 2.5,
 }
 
 # ---------------------------------------------------------------------------
@@ -266,11 +270,7 @@ def generate(seed: int = 42) -> dict[str, pd.DataFrame]:
     # ------------------------------------------------------------------
     # 6. Opening stock — per-SKU multiplier of first-week forecast
     #
-    # _OPENING_MULT drives the colour distribution:
-    #   "60444"  0.25 -> opens below week-1 demand -> dark_red in week 1
-    #   "61747" 16.00 -> opens above max_cover demand window -> black band
-    #   shortage SKUs -> low opening, shortage starts in weeks 2-4
-    #   healthy SKUs  -> generous opening for an early green/dark_blue block
+    # See _OPENING_MULT for the per-SKU rationale.
     # ------------------------------------------------------------------
     first_wk = week_keys[0]
     opening_records = []
