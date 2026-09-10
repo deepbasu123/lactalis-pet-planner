@@ -42,6 +42,24 @@ export function collectBreaches(
   return breaches;
 }
 
+// ── actionableBreaches ────────────────────────────────────────────────────────
+
+/**
+ * Breaches the planner can actually resolve: everything collectBreaches finds,
+ * minus locked (time-fenced) weeks. Locked weeks run the committed SNP baseline
+ * (all SKUs, both packs) so they perpetually flag R1/R2, but they cannot be
+ * edited or auto-fixed. Counting them as outstanding violations makes Auto-fix
+ * look broken because the banner can never reach zero. This returns only the
+ * breaches in editable weeks.
+ */
+export function actionableBreaches(
+  weekFlags: Record<string, WeekFlags>,
+  lockedWeeks: Set<string> | string[],
+): BreachEntry[] {
+  const locked = lockedWeeks instanceof Set ? lockedWeeks : new Set(lockedWeeks);
+  return collectBreaches(weekFlags).filter((b) => !locked.has(b.week_key));
+}
+
 // ── formatBreachMessage ───────────────────────────────────────────────────────
 
 /**

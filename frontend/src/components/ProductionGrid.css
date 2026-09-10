@@ -281,6 +281,14 @@
   cursor: default;
 }
 
+.pg-banner-locked-note {
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  opacity: 0.72;
+  font-style: italic;
+}
+
 .pg-banner-list {
   margin: 0;
   padding-left: var(--sp-4);

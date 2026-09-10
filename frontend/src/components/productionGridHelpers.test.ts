@@ -3,6 +3,7 @@ import {
   computeDirtyCount,
   formatBreachMessage,
   collectBreaches,
+  actionableBreaches,
   buildServerMap,
 } from './productionGridHelpers';
 import type { BreachEntry } from './productionGridHelpers';
@@ -207,5 +208,37 @@ describe('buildServerMap', () => {
     const m = buildServerMap(rows);
     expect(m.size).toBe(3);
     expect(m.get('61108|2026-W35')?.planned_qty).toBe(200_000);
+  });
+});
+
+describe('actionableBreaches', () => {
+  const flags = (o: Partial<WeekFlags>): WeekFlags => ({
+    R1: false, R2: false, R3: false, R4: false, no_rule: false, over: 0, ...o,
+  });
+
+  it('drops breaches in locked weeks', () => {
+    const wf: Record<string, WeekFlags> = {
+      '2026-W35': flags({ R1: true, R2: true }), // locked
+      '2026-W40': flags({ R1: true, R2: true }), // editable
+    };
+    const result = actionableBreaches(wf, new Set(['2026-W35']));
+    expect(result.every((b) => b.week_key !== '2026-W35')).toBe(true);
+    expect(result.filter((b) => b.week_key === '2026-W40').length).toBe(2);
+  });
+
+  it('returns empty when only locked weeks breach', () => {
+    const wf: Record<string, WeekFlags> = {
+      '2026-W35': flags({ R1: true, R2: true }),
+      '2026-W36': flags({ R1: true }),
+    };
+    expect(actionableBreaches(wf, ['2026-W35', '2026-W36'])).toEqual([]);
+  });
+
+  it('accepts an array of locked weeks', () => {
+    const wf: Record<string, WeekFlags> = {
+      '2026-W41': flags({ R3: true, over: 5 }),
+    };
+    expect(actionableBreaches(wf, []).length).toBe(1);
+    expect(actionableBreaches(wf, ['2026-W41'])).toEqual([]);
   });
 });

@@ -31,6 +31,7 @@ import { formatValue, isoWeekLabel, fmtShortDate } from './supplyGridHelpers';
 import {
   formatBreachMessage,
   collectBreaches,
+  actionableBreaches,
   buildServerMap,
 } from './productionGridHelpers';
 import './ProductionGrid.css';
@@ -70,21 +71,41 @@ const BREACH_PREVIEW_COUNT = 6;
 
 function ValidationBanner({
   weekFlags,
+  lockedWeeks,
   onAutoFix,
   fixing,
 }: {
   weekFlags: Record<string, WeekFlags>;
+  lockedWeeks: Set<string>;
   onAutoFix: () => void;
   fixing: boolean;
 }) {
   const [showAll, setShowAll] = useState(false);
-  const breaches = collectBreaches(weekFlags ?? {});
+  // Only editable weeks are actionable. Locked (time-fenced) weeks run the
+  // committed baseline and perpetually flag R1/R2; they cannot be fixed, so
+  // they are reported separately, not counted as outstanding breaches.
+  const allBreaches = collectBreaches(weekFlags ?? {});
+  const breaches = actionableBreaches(weekFlags ?? {}, lockedWeeks);
+  const lockedCount = allBreaches.length - breaches.length;
+
+  const lockedNote =
+    lockedCount > 0 ? (
+      <span className="pg-banner-locked-note">
+        {lockedCount} baseline breach{lockedCount !== 1 ? 'es' : ''} in locked
+        (time-fenced) week{lockedCount !== 1 ? 's' : ''} cannot be changed.
+      </span>
+    ) : null;
 
   if (breaches.length === 0) {
     return (
       <div className="pg-banner pg-banner--ok" role="status" aria-live="polite">
         <span className="pg-banner-icon" aria-hidden="true">&#10003;</span>
-        <span>All validation rules pass</span>
+        <div className="pg-banner-content">
+          <span className="pg-banner-title">
+            {lockedCount > 0 ? 'All editable weeks pass validation' : 'All validation rules pass'}
+          </span>
+          {lockedNote}
+        </div>
       </div>
     );
   }
@@ -126,6 +147,7 @@ function ValidationBanner({
               : `Show all ${breaches.length} breaches (${hidden} more)`}
           </button>
         )}
+        {lockedNote}
       </div>
     </div>
   );
@@ -283,6 +305,11 @@ export default function ProductionGrid({
     for (const w of weeks) m.set(w.week_key, w);
     return m;
   }, [weeks]);
+
+  const lockedWeeks = useMemo(
+    () => new Set(weeks.filter((w) => w.is_locked).map((w) => w.week_key)),
+    [weeks],
+  );
 
   // Adjusted weekly totals that reflect local dirty edits
   const computedTotals = useMemo(() => {
@@ -656,6 +683,7 @@ export default function ProductionGrid({
       {/* ── Capacity validation banner ───────────────────── */}
       <ValidationBanner
         weekFlags={weekFlagsState}
+        lockedWeeks={lockedWeeks}
         onAutoFix={() => void handleAutoFix()}
         fixing={fixing}
       />
