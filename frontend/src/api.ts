@@ -151,6 +151,24 @@ export interface DiscardResponse {
   cleared: number; // overlay entries removed
 }
 
+// ── POST /api/production/autofix ─────────────────────────────────────────────
+// Strict-trim rule resolver. Writes the corrective changes into the session
+// overlay (staged as unsaved edits) and returns the changed cells + a report.
+
+export interface AutoFixReport {
+  weeks_changed: number;
+  cells_zeroed: number;
+  cells_trimmed: number;
+  volume_dropped: number;
+  locked_weeks_skipped: number;
+}
+
+export interface AutoFixResponse {
+  status: string;             // "ok"
+  changed: PlanCell[];        // cells whose planned_qty changed
+  report: AutoFixReport;
+}
+
 // ── POST /api/production/reset-week (request body) ───────────────────────────
 
 export interface ResetWeekRequest {
@@ -276,6 +294,9 @@ export const discardProduction = (): Promise<DiscardResponse> =>
 
 export const resetWeek = (req: ResetWeekRequest): Promise<DiscardResponse> =>
   jsonPost<DiscardResponse>('/api/production/reset-week', req);
+
+export const autoFixBreaches = (): Promise<AutoFixResponse> =>
+  jsonPost<AutoFixResponse>('/api/production/autofix', {});
 
 export const updateParameter = (req: PutParameterRequest): Promise<PutResponse> =>
   jsonPut<PutResponse>('/api/parameters', req);

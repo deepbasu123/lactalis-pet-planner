@@ -462,3 +462,53 @@ class TestSaveOverlayConversion:
         keys = {(r["sku_code"], r["week_key"]) for r in rows_arg}
         assert ("61108", "2026-W38") in keys
         assert ("61747", "2026-W39") in keys
+
+
+# ---------------------------------------------------------------------------
+# POST /api/production/autofix
+# ---------------------------------------------------------------------------
+
+def _locked_week_keys(client) -> set[str]:
+    cfg = client.get("/api/config").json()
+    return {w["week_key"] for w in cfg["weeks"] if w["is_locked"]}
+
+
+class TestAutoFix:
+    def test_returns_ok_with_changes_and_report(self):
+        client = TestClient(app)
+        r = client.post("/api/production/autofix")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "ok"
+        assert isinstance(body["changed"], list)
+        assert len(body["changed"]) > 0
+        for k in ("weeks_changed", "cells_zeroed", "volume_dropped",
+                  "locked_weeks_skipped"):
+            assert k in body["report"]
+
+    def test_unlocked_weeks_compliant_after_autofix(self):
+        """After autofix, GET /api/production shows no R1-R4 breach off-lock."""
+        client = TestClient(app)
+        locked = _locked_week_keys(client)
+        client.post("/api/production/autofix")
+        prod = client.get("/api/production").json()
+        offenders = [
+            wk for wk, f in prod["week_flags"].items()
+            if wk not in locked and (f["R1"] or f["R2"] or f["R3"] or f["R4"])
+        ]
+        assert offenders == [], f"unlocked weeks still breaching: {offenders}"
+
+    def test_autofix_writes_to_overlay_then_discard_restores(self):
+        client = TestClient(app)
+        client.post("/api/production/autofix")
+        # The overlay now holds the changes; discard should clear them all.
+        r_discard = client.post("/api/production/discard")
+        assert r_discard.status_code == 200
+        assert r_discard.json()["cleared"] > 0
+
+    def test_does_not_touch_locked_weeks(self):
+        client = TestClient(app)
+        locked = _locked_week_keys(client)
+        changed = client.post("/api/production/autofix").json()["changed"]
+        for cell in changed:
+            assert cell["week_key"] not in locked

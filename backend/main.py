@@ -37,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.models import (
+    AutoFixResponse,
     ConfigMeta,
     ConfigResponse,
     DiscardResponse,
@@ -402,6 +403,37 @@ def api_production_reset_week(
     for k in keys_to_remove:
         del overlay[k]
     return DiscardResponse(status="ok", cleared=len(keys_to_remove))
+
+
+# ---------------------------------------------------------------------------
+# POST /api/production/autofix
+# ---------------------------------------------------------------------------
+
+@app.post("/api/production/autofix", response_model=AutoFixResponse)
+def api_production_autofix(request: Request, response: Response) -> AutoFixResponse:
+    """Auto-resolve capacity-rule breaches (R1-R4) by strict trimming.
+
+    Keeps each UNLOCKED week to a single pack size and at most 3 top-priority
+    SKUs, trimming to the ceiling; the excess is dropped, not reallocated.
+    Locked weeks (time fence) are never changed. The computed changes are
+    written into the session overlay as unsaved edits, so the caller reviews
+    them and then Saves or Discards, exactly like manual edits.
+    """
+    from backend import autofix
+    ds = get_dataset()
+    sid = _get_or_create_sid(request, response)
+    overlay = _session_overlay(sid)
+
+    result = autofix.strict_trim(ds, overlay)
+    changes = result["overlay"]
+    for key, qty in changes.items():
+        overlay[key] = qty
+
+    changed_list = [
+        {"sku_code": s, "week_key": wk, "planned_qty": q}
+        for (s, wk), q in changes.items()
+    ]
+    return AutoFixResponse(status="ok", changed=changed_list, report=result["report"])
 
 
 # ---------------------------------------------------------------------------

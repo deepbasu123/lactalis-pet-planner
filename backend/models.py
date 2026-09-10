@@ -77,6 +77,12 @@ class DiscardResponse(BaseModel):
     cleared: int  # number of overlay entries removed
 
 
+class AutoFixResponse(BaseModel):
+    status: str
+    changed: list[dict[str, Any]]  # [{sku_code, week_key, planned_qty}] cells changed
+    report: dict[str, Any]         # weeks_changed / cells_zeroed / volume_dropped / ...
+
+
 class RecalcResponse(BaseModel):
     supply: SupplyResponse
     production: ProductionResponse

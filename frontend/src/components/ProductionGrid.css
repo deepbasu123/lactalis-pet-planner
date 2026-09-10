@@ -238,6 +238,49 @@
   letter-spacing: -0.01em;
 }
 
+/* Headline row: title on the left, Auto-fix action on the right. */
+.pg-banner-headline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.pg-autofix-btn {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  font-family: var(--font-sans);
+  letter-spacing: -0.01em;
+  color: #fff;
+  background: #E1382D;
+  border: 1px solid #E1382D;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--ease-fast), transform var(--ease-fast);
+}
+
+.pg-autofix-btn:hover:not(:disabled) {
+  background: #b71c1c;
+  border-color: #b71c1c;
+}
+
+.pg-autofix-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.pg-autofix-btn:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.pg-autofix-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .pg-banner-list {
   margin: 0;
   padding-left: var(--sp-4);
@@ -311,6 +354,21 @@
 
 .pg-toast-icon {
   font-size: 14px;
+}
+
+/* Info variant used by the Auto-fix summary. Wraps (it carries a sentence),
+   sits above the save toast, and is not click-through so it reads clearly. */
+.pg-toast--info {
+  background: #eef4fb;
+  color: var(--lac-blue);
+  border: 1px solid #cfe0f2;
+  border-left: 3px solid var(--lac-blue);
+  max-width: min(460px, calc(100% - 2 * var(--sp-5)));
+  bottom: auto;
+  top: var(--sp-4);
+  font-weight: 600;
+  line-height: 1.35;
+  align-items: flex-start;
 }
 
 /* ── Scroll container ────────────────────────────────────────────────── */

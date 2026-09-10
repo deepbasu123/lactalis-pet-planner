@@ -24,6 +24,7 @@ import {
   saveProduction,
   discardProduction,
   resetWeek,
+  autoFixBreaches,
 } from '../api';
 import type { PlanCell, WeekFlags, Week, SKU } from '../api';
 import { formatValue, isoWeekLabel, fmtShortDate } from './supplyGridHelpers';
@@ -67,7 +68,15 @@ function LockIcon({ size = 12 }: { size?: number }) {
 
 const BREACH_PREVIEW_COUNT = 6;
 
-function ValidationBanner({ weekFlags }: { weekFlags: Record<string, WeekFlags> }) {
+function ValidationBanner({
+  weekFlags,
+  onAutoFix,
+  fixing,
+}: {
+  weekFlags: Record<string, WeekFlags>;
+  onAutoFix: () => void;
+  fixing: boolean;
+}) {
   const [showAll, setShowAll] = useState(false);
   const breaches = collectBreaches(weekFlags ?? {});
 
@@ -87,9 +96,20 @@ function ValidationBanner({ weekFlags }: { weekFlags: Record<string, WeekFlags> 
     <div className="pg-banner pg-banner--breach" role="alert">
       <span className="pg-banner-icon" aria-hidden="true">!</span>
       <div className="pg-banner-content">
-        <span className="pg-banner-title">
-          {breaches.length} capacity breach{breaches.length > 1 ? 'es' : ''} detected
-        </span>
+        <div className="pg-banner-headline">
+          <span className="pg-banner-title">
+            {breaches.length} capacity breach{breaches.length > 1 ? 'es' : ''} detected
+          </span>
+          <button
+            className="pg-autofix-btn"
+            onClick={onAutoFix}
+            disabled={fixing}
+            aria-label="Automatically resolve all fixable capacity breaches by trimming each week to one pack size and three SKUs"
+            title="Trim each unlocked week to one pack size and its top 3 priority SKUs. Excess is dropped. Staged as unsaved edits you can review, then Save or Discard."
+          >
+            {fixing ? 'Auto-fixing...' : 'Auto-fix breaches'}
+          </button>
+        </div>
         <ul className="pg-banner-list">
           {visible.map((b, i) => (
             <li key={i}>{formatBreachMessage(b)}</li>
@@ -210,24 +230,43 @@ export default function ProductionGrid({
   const [saving, setSaving] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [fixing, setFixing] = useState(false);
   const [saveToast, setSaveToast] = useState(false);
+  const [autofixToast, setAutofixToast] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autofixTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Only the first mount shows the full skeleton. Later dataVersion bumps (after
+  // an edit) refresh totals + capacity flags in place.
+  const didInitialLoad = useRef(false);
 
   // ── Fetch production data ─────────────────────────────────────────────────────
+  // On the initial mount we show the loading skeleton. On every subsequent
+  // dataVersion bump (i.e. after an accepted edit), we re-fetch SILENTLY and swap
+  // the fresh totals / capacity flags in place. Typed values stay visible via the
+  // dirtyMap overlay, so entering a number never makes the table disappear.
   useEffect(() => {
-    setLoading(true);
-    setFetchError(null);
+    const isInitial = !didInitialLoad.current;
+    if (isInitial) {
+      setLoading(true);
+      setFetchError(null);
+    }
     void fetchProduction()
       .then((data) => {
         setServerRows(data.rows ?? []);
         setServerTotals(data.week_totals ?? {});
         setWeekFlagsState(data.week_flags ?? {});
+        didInitialLoad.current = true;
       })
       .catch((err: unknown) => {
-        setFetchError(err instanceof Error ? err.message : 'Failed to load production data');
+        // Only blank to an error state on the initial load. A failed background
+        // refresh keeps the last-good grid rather than wiping the user's edits.
+        if (isInitial) {
+          setFetchError(err instanceof Error ? err.message : 'Failed to load production data');
+        }
       })
       .finally(() => {
-        setLoading(false);
+        if (isInitial) setLoading(false);
       });
   }, [dataVersion]);
 
@@ -479,6 +518,50 @@ export default function ProductionGrid({
     }
   }
 
+  // Auto-fix: strict-trim every unlocked week to one pack size and its top 3
+  // SKUs. The server writes the changes into the session overlay; we mirror
+  // them into dirtyMap/editedKeys (same as manual edits) so they show as
+  // unsaved, then bump dataVersion for a silent recolour. Review, then Save.
+  async function handleAutoFix() {
+    if (fixing) return;
+    setFixing(true);
+    try {
+      const res = await autoFixBreaches();
+      setDirtyMap((prev) => {
+        const n = { ...prev };
+        for (const c of res.changed) n[`${c.sku_code}|${c.week_key}`] = c.planned_qty;
+        return n;
+      });
+      setEditedKeys((prev) => {
+        const n = new Set(prev);
+        for (const c of res.changed) n.add(`${c.sku_code}|${c.week_key}`);
+        return n;
+      });
+      onDataChange();
+
+      const r = res.report;
+      const dropped = Math.round(r.volume_dropped).toLocaleString();
+      const locked = r.locked_weeks_skipped;
+      setAutofixToast(
+        `Auto-fixed ${r.weeks_changed} week${r.weeks_changed !== 1 ? 's' : ''}: ` +
+        `${res.changed.length} cells changed, ${dropped} EA dropped. ` +
+        (locked > 0
+          ? `${locked} locked week${locked !== 1 ? 's' : ''} left unchanged. `
+          : '') +
+        `Review below, then Save or Discard.`,
+      );
+      if (autofixTimerRef.current) clearTimeout(autofixTimerRef.current);
+      autofixTimerRef.current = setTimeout(() => setAutofixToast(null), 9000);
+    } catch (err) {
+      console.error('[ProductionGrid] Auto-fix failed:', err);
+      setAutofixToast('Auto-fix failed. Please try again.');
+      if (autofixTimerRef.current) clearTimeout(autofixTimerRef.current);
+      autofixTimerRef.current = setTimeout(() => setAutofixToast(null), 6000);
+    } finally {
+      setFixing(false);
+    }
+  }
+
   // Toggle week selection for Reset Week
   function toggleActiveWeek(weekKey: string) {
     setActiveWeekKey((prev) => (prev === weekKey ? null : weekKey));
@@ -571,7 +654,19 @@ export default function ProductionGrid({
       </div>
 
       {/* ── Capacity validation banner ───────────────────── */}
-      <ValidationBanner weekFlags={weekFlagsState} />
+      <ValidationBanner
+        weekFlags={weekFlagsState}
+        onAutoFix={() => void handleAutoFix()}
+        fixing={fixing}
+      />
+
+      {/* ── Auto-fix summary toast ───────────────────────── */}
+      {autofixToast && (
+        <div className="pg-toast pg-toast--info" role="status" aria-live="polite">
+          <span className="pg-toast-icon" aria-hidden="true">&#9881;</span>
+          {autofixToast}
+        </div>
+      )}
 
       {/* ── Success toast ────────────────────────────────── */}
       {saveToast && (
