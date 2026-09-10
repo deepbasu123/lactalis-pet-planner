@@ -549,11 +549,19 @@
   min-width: var(--pg-cell-w);
   width: var(--pg-cell-w);
   padding: 0;
-  position: relative;
+  /*
+   * No position:relative here. A .pg-td-sku cell also has class pg-td; both
+   * .pg-td and .pg-td-sku have single-class specificity (0-1-0). If .pg-td
+   * set position:relative and appeared before .pg-td-sku in the cascade, the
+   * outcome is browser-dependent for same-specificity ties — sticky may lose.
+   * position:relative is moved to .pg-td-cell (only data cells need it for
+   * the lock-message absolute anchor; SKU cells never have pg-td-cell).
+   */
 }
 
 /* Editable cell base: shows cursor affordance */
 .pg-td-cell {
+  position: relative; /* anchors .pg-lock-msg (absolute) and the pending progress bar */
   cursor: default;
   transition:
     background var(--ease-fast),

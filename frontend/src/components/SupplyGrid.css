@@ -204,8 +204,18 @@
 /* ── Grid scroll wrapper ─────────────────────────────────────────── */
 
 .sg-scroll-wrap {
-  overflow-x: auto;
-  overflow-y: visible;
+  /*
+   * Definitive sticky-scoping fix:
+   * Both overflow axes are set so the browser creates a proper scroll container.
+   * position:sticky on .sg-th (top:0) and .sg-td-sku (left:0) are scoped to
+   * THIS container, not the page viewport.  On page scroll the whole card
+   * moves with the page; on internal scroll the header row and SKU column pin
+   * to the edges of this container.  The max-height gives a vertical bound so
+   * the grid has a real scroll container extent and all 11 rows are reachable.
+   */
+  overflow: auto;
+  max-height: calc(100vh - 220px);
+  min-height: 200px;
   -webkit-overflow-scrolling: touch;
   /* Subtle scroll shadow on right edge when content overflows */
   background:
