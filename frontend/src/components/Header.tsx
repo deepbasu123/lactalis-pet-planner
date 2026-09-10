@@ -2,6 +2,8 @@ import type { RunMeta } from '../api';
 
 interface HeaderProps {
   runMeta: RunMeta | undefined;
+  genieOpen?: boolean;
+  onGenieToggle?: () => void;
 }
 
 function LactalisLogo() {
@@ -70,7 +72,7 @@ function fmt(n: number): string {
   return n.toLocaleString('en-AU');
 }
 
-export default function Header({ runMeta }: HeaderProps) {
+export default function Header({ runMeta, genieOpen = false, onGenieToggle }: HeaderProps) {
   return (
     <header style={styles.header}>
       <div style={styles.left}>
@@ -95,6 +97,39 @@ export default function Header({ runMeta }: HeaderProps) {
             <div style={{ ...styles.skeletonChip, width: 52 }} className="skeleton" />
             <div style={{ ...styles.skeletonChip, width: 64 }} className="skeleton" />
             <div style={{ ...styles.skeletonChip, width: 112 }} className="skeleton" />
+          </>
+        )}
+
+        {/* Genie toggle -- available at all times, secondary to the grid data */}
+        {onGenieToggle && (
+          <>
+            <div style={styles.divider} aria-hidden="true" />
+            <button
+              onClick={onGenieToggle}
+              aria-expanded={genieOpen}
+              aria-label={genieOpen ? 'Close Genie panel' : 'Open Genie panel'}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '0 14px',
+                height: 32,
+                background: genieOpen ? 'var(--lac-blue)' : 'transparent',
+                color: genieOpen ? '#fff' : 'var(--lac-blue)',
+                border: '1px solid var(--lac-blue)',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: 'var(--text-sm)',
+                fontWeight: 600,
+                fontFamily: 'var(--font-sans)',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                letterSpacing: '0.01em',
+                transition: 'background-color var(--ease-base), color var(--ease-base)',
+              }}
+            >
+              <span aria-hidden="true" style={{ fontSize: 11 }}>&#9670;</span>
+              Ask Genie
+            </button>
           </>
         )}
       </div>

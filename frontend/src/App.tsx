@@ -8,6 +8,7 @@ import Parameters from './components/Parameters';
 import SkuPriority from './components/SkuPriority';
 import WeekConfig from './components/WeekConfig';
 import TrafficLightSummary from './components/TrafficLightSummary';
+import GeniePanel from './components/GeniePanel';
 import { fetchConfig } from './api';
 import type { ConfigResponse } from './api';
 
@@ -164,6 +165,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>('production');
   const [retryCount, setRetryCount] = useState(0);
+  const [genieOpen, setGenieOpen] = useState(false);
+  const toggleGenie = useCallback(() => setGenieOpen((v) => !v), []);
 
   /**
    * dataVersion — a monotonically increasing counter shared between
@@ -209,8 +212,9 @@ export default function App() {
   if (error) {
     return (
       <>
-        <Header runMeta={undefined} />
+        <Header runMeta={undefined} genieOpen={genieOpen} onGenieToggle={toggleGenie} />
         <ErrorShell message={error} onRetry={handleRetry} />
+        <GeniePanel isOpen={genieOpen} onClose={() => setGenieOpen(false)} />
       </>
     );
   }
@@ -223,9 +227,10 @@ export default function App() {
     : undefined;
 
   return (
+    <>
     <div className="app-layout">
       {/* ── Fixed header ──────────────────────────────── */}
-      <Header runMeta={displayMeta} />
+      <Header runMeta={displayMeta} genieOpen={genieOpen} onGenieToggle={toggleGenie} />
 
       {/* ── Tab navigation ────────────────────────────── */}
       <nav className="tab-nav" role="tablist" aria-label="Planner tabs">
@@ -292,5 +297,11 @@ export default function App() {
       </ErrorBoundary>
       </main>
     </div>
+
+      {/* ── Genie panel -- app-level fixed overlay, closed by default ── */}
+      <ErrorBoundary>
+        <GeniePanel isOpen={genieOpen} onClose={() => setGenieOpen(false)} />
+      </ErrorBoundary>
+    </>
   );
 }

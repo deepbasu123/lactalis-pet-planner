@@ -1,0 +1,137 @@
+/*
+ * GeniePanel.css
+ * Animations and overflow utilities for the Genie chat panel.
+ */
+
+/* ── Typing indicator ────────────────────────────────────────────────────── */
+
+@keyframes genie-dot-bounce {
+  0%, 60%, 100% {
+    opacity: 0.2;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-4px);
+  }
+}
+
+.genie-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--lac-blue);
+  animation: genie-dot-bounce 1.3s ease-in-out infinite;
+}
+
+.genie-dot:nth-child(2) { animation-delay: 0.15s; }
+.genie-dot:nth-child(3) { animation-delay: 0.30s; }
+
+/* ── SQL collapsible ─────────────────────────────────────────────────────── */
+
+.genie-sql-details {
+  margin-top: 8px;
+}
+
+.genie-sql-summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--lac-blue);
+  cursor: pointer;
+  user-select: none;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 4px 0;
+  list-style: none;
+}
+
+.genie-sql-summary::-webkit-details-marker { display: none; }
+
+.genie-sql-summary::before {
+  content: '+ ';
+}
+
+details[open] .genie-sql-summary::before {
+  content: '- ';
+}
+
+.genie-sql-pre {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-light);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  overflow-x: auto;
+  white-space: pre;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+/* ── Result table ────────────────────────────────────────────────────────── */
+
+.genie-table-wrap {
+  margin-top: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--border-light);
+}
+
+.genie-table {
+  border-collapse: collapse;
+  font-size: 11px;
+  min-width: 100%;
+  white-space: nowrap;
+}
+
+.genie-table th {
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-weight: 600;
+  padding: 5px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  letter-spacing: 0.02em;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.genie-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-primary);
+  font-feature-settings: "tnum" 1;
+}
+
+.genie-table tr:last-child td { border-bottom: none; }
+
+.genie-table tr:nth-child(even) td { background: var(--surface-1); }
+
+/* ── Panel slide animation ────────────────────────────────────────────────── */
+
+.genie-panel {
+  /* Base style handled inline for dynamic props (isOpen state). */
+  /* This class exists so the outer layer can target the panel if needed. */
+}
+
+/* ── Message area scrollbar ──────────────────────────────────────────────── */
+
+.genie-messages {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.genie-messages::-webkit-scrollbar {
+  width: 4px;
+}
+
+.genie-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.genie-messages::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
