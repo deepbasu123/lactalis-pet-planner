@@ -45,6 +45,13 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
 
+# backend.db provides the shared SQL execute-and-poll implementation.
+# Ensure the project root is on sys.path so the import works regardless of
+# the caller's working directory.
+sys.path.insert(0, str(PROJECT_ROOT))
+from backend.db import run_sql           # noqa: E402  (after path setup)
+from backend.data_gen import generate    # noqa: E402
+
 CATALOG = "deep_test_1_catalog"
 SCHEMA = "lactalis_pet"
 APP_NAME = "lactalis-pet-planner"
@@ -214,40 +221,17 @@ def _table_ddl(table_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# SQL execution (deploy-time, no backend.db dependency)
+# Deploy-specific SQL helper (uses backend.db.run_sql -- single implementation)
 # ---------------------------------------------------------------------------
 
-def _run_sql(w, warehouse_id: str, sql: str) -> Any:
-    """Execute SQL via the Statement Execution API and block until done.
+def _insert_df(warehouse_id: str, table_fqn: str, df, batch: int = 100) -> None:
+    """TRUNCATE table then INSERT all rows from a pandas DataFrame in batches.
 
-    wait_timeout is capped at 30 s per project note (spec: SDK wait_timeout
-    valid range is 5-50 s).  On PENDING/RUNNING, polls every 2 s.
-    Raises RuntimeError on failure.
+    Full-table load helper used only at deploy time.  Delegates statement
+    execution to backend.db.run_sql so the execute-and-poll logic is not
+    duplicated here.
     """
-    from databricks.sdk.service.sql import StatementState
-
-    resp = w.statement_execution.execute_statement(
-        warehouse_id=warehouse_id,
-        statement=sql,
-        wait_timeout="30s",
-    )
-    while resp.status.state in (StatementState.PENDING, StatementState.RUNNING):
-        time.sleep(2)
-        resp = w.statement_execution.get_statement(resp.statement_id)
-
-    if resp.status.state != StatementState.SUCCEEDED:
-        # resp.status.error may be None; guard against that
-        err = getattr(resp.status, "error", None)
-        raise RuntimeError(
-            f"SQL failed ({resp.status.state}): {err}\n"
-            f"Statement (first 400 chars): {sql[:400]}"
-        )
-    return resp
-
-
-def _insert_df(w, warehouse_id: str, table_fqn: str, df, batch: int = 100) -> None:
-    """TRUNCATE table then INSERT all rows from a pandas DataFrame in batches."""
-    _run_sql(w, warehouse_id, f"TRUNCATE TABLE {table_fqn}")
+    run_sql(warehouse_id, f"TRUNCATE TABLE {table_fqn}")
     cols = ", ".join(df.columns.tolist())
     n = len(df)
     for start in range(0, n, batch):
@@ -257,8 +241,7 @@ def _insert_df(w, warehouse_id: str, table_fqn: str, df, batch: int = 100) -> No
             vals = [_sql_val(row[c]) for c in df.columns]
             row_strs.append(f"  ({', '.join(vals)})")
         values_block = ",\n".join(row_strs)
-        _run_sql(
-            w,
+        run_sql(
             warehouse_id,
             f"INSERT INTO {table_fqn} ({cols})\nVALUES\n{values_block}",
         )
@@ -314,7 +297,7 @@ def step_pick_warehouse(w, warehouse_id_arg: str | None) -> str:
 def step_create_schema(w, warehouse_id: str) -> None:
     """Step 2: Create schema IF NOT EXISTS."""
     log.info("[2/11] Creating schema %s.%s (IF NOT EXISTS)...", CATALOG, SCHEMA)
-    _run_sql(w, warehouse_id, f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
+    run_sql(warehouse_id, f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
     log.info("  Schema ready.")
 
 
@@ -327,60 +310,57 @@ def step_create_tables(w, warehouse_id: str) -> None:
     log.info("[3/11] Creating %d Delta tables (IF NOT EXISTS)...", len(tables))
     for t in tables:
         ddl = _table_ddl(t)
-        _run_sql(w, warehouse_id, ddl)
+        run_sql(warehouse_id, ddl)
         log.info("  Table ready: %s.%s.%s", CATALOG, SCHEMA, t)
 
 
-def step_load_data(w, warehouse_id: str) -> None:
-    """Step 4: Load synthetic data from data_gen.generate().
+def step_load_data(w, warehouse_id: str, ds: dict) -> None:
+    """Step 4: Load synthetic data.
 
-    Each of the 6 base tables is TRUNCATED then re-inserted.  Step 5 loads
-    projection_snapshot (needs the engine to run first).
+    Accepts the pre-generated dataset (caller generates once, shared with
+    step_load_snapshot to avoid running data_gen.generate() twice).
+    Each of the 6 base tables is TRUNCATED then re-inserted.
     """
-    log.info("[4/11] Generating and loading synthetic data...")
-    sys.path.insert(0, str(PROJECT_ROOT))
-    from backend.data_gen import generate
-
-    ds = generate(seed=42)
+    log.info("[4/11] Loading synthetic data...")
     base_tables = ["sku", "week", "parameter", "demand", "plan_line", "opening_stock"]
     for name in base_tables:
         fqn = f"{CATALOG}.{SCHEMA}.{name}"
         df = ds[name]
         log.info("  Loading %s (%d rows)...", fqn, len(df))
-        _insert_df(w, warehouse_id, fqn, df)
+        _insert_df(warehouse_id, fqn, df)
         log.info("  Loaded %s.", name)
 
 
-def step_load_snapshot(w, warehouse_id: str) -> None:
-    """Step 5: Compute projection_snapshot via the engine and load it."""
+def step_load_snapshot(w, warehouse_id: str, ds: dict) -> None:
+    """Step 5: Compute projection_snapshot via the engine and load it.
+
+    Accepts the same pre-generated dataset as step_load_data so
+    data_gen.generate() runs only once per deploy.
+    """
     log.info("[5/11] Computing projection_snapshot...")
-    sys.path.insert(0, str(PROJECT_ROOT))
-    from backend.data_gen import generate
     from backend.service import build_supply
 
-    ds = generate(seed=42)
     supply_df = build_supply(ds)
 
-    # project_snapshot needs: sku_code, week_key, horizon_index, opening, recv,
-    # prod, demand, raw, close, cover_weeks, severity, colour, updated_at
+    # Select the 12 projected columns; _sql_val handles the datetime object.
     snap_cols = [
         "sku_code", "week_key", "horizon_index",
         "opening", "recv", "prod", "demand",
         "raw", "close", "cover_weeks", "severity", "colour",
     ]
     snap_df = supply_df[snap_cols].copy()
-    snap_df["updated_at"] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    # Pass a datetime object so _sql_val formats it via its datetime branch.
+    snap_df["updated_at"] = datetime.datetime.utcnow()
 
     fqn = f"{CATALOG}.{SCHEMA}.projection_snapshot"
     log.info("  Loading projection_snapshot (%d rows)...", len(snap_df))
-    _insert_df(w, warehouse_id, fqn, snap_df)
+    _insert_df(warehouse_id, fqn, snap_df)
     log.info("  projection_snapshot loaded.")
 
 
 def step_ensure_genie(w, warehouse_id: str) -> str:
     """Step 6: Create or reuse the Genie space. Returns the space id."""
     log.info("[6/11] Ensuring Genie space...")
-    sys.path.insert(0, str(PROJECT_ROOT))
     from deploy.create_genie import ensure_space
 
     space_id = ensure_space(w, CATALOG, SCHEMA, warehouse_id)
@@ -397,7 +377,7 @@ def step_write_app_yaml(warehouse_id: str, genie_space_id: str) -> None:
     log.info("  app.yaml updated (warehouse=%s, genie=%s)", warehouse_id, genie_space_id)
 
 
-def step_create_or_update_app(w, profile: str) -> str:
+def step_create_or_update_app(w, profile: str) -> None:
     """Step 8: Create the app if it does not exist; return the app URL.
 
     Uses the Databricks CLI `databricks apps create` so the app record is
@@ -737,8 +717,12 @@ def main() -> None:
     # Steps 2-5: schema, tables, data, snapshot
     step_create_schema(w, warehouse_id)
     step_create_tables(w, warehouse_id)
-    step_load_data(w, warehouse_id)
-    step_load_snapshot(w, warehouse_id)
+    # Generate the synthetic dataset once; pass the same dict to both steps
+    # so data_gen.generate() runs only once per deploy.
+    log.info("Generating synthetic dataset (seed=42)...")
+    ds = generate(seed=42)
+    step_load_data(w, warehouse_id, ds)
+    step_load_snapshot(w, warehouse_id, ds)
 
     # Step 6: Genie
     genie_space_id = step_ensure_genie(w, warehouse_id)

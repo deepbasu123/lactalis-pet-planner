@@ -86,9 +86,12 @@ def _fmt_val(val: Any) -> str:
     return _quote_str(str(val))
 
 
-def _run_sql(sql: str):
+def run_sql(warehouse_id: str, statement: str):
     """
     Execute a SQL statement via the Statement Execution API.
+
+    Public function shared with deploy.py so the execute-and-poll logic
+    lives in exactly one place.
 
     Blocks for up to 30 s inline (wait_timeout). If still PENDING or RUNNING
     after that, polls every 2 s until the statement reaches a terminal state.
@@ -98,8 +101,8 @@ def _run_sql(sql: str):
 
     w = _client()
     resp = w.statement_execution.execute_statement(
-        warehouse_id=settings.warehouse_id,
-        statement=sql,
+        warehouse_id=warehouse_id,
+        statement=statement,
         wait_timeout="30s",
     )
     while resp.status.state in (StatementState.PENDING, StatementState.RUNNING):
@@ -111,6 +114,11 @@ def _run_sql(sql: str):
             f"SQL statement failed ({resp.status.state}): {resp.status.error}"
         )
     return resp
+
+
+def _run_sql(sql: str):
+    """Internal shorthand: run_sql with the warehouse_id from settings."""
+    return run_sql(settings.warehouse_id, sql)
 
 
 # ── public interface ─────────────────────────────────────────────────────────
