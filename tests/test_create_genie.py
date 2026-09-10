@@ -65,7 +65,7 @@ class TestTableIdentifiers:
 class TestBuildSerializedSpace:
     @pytest.fixture
     def space(self) -> dict:
-        raw = build_serialized_space("deep_test_1_catalog", "lactalis_pet")
+        raw = build_serialized_space("deep_test_1_catalog", "lactalis_pet_planner")
         return json.loads(raw)
 
     def test_returns_valid_json_string(self):
@@ -143,7 +143,7 @@ class TestBuildSerializedSpace:
     def test_tables_use_correct_catalog_and_schema(self, space):
         ids = [t["identifier"] for t in space["data_sources"]["tables"]]
         for id_ in ids:
-            assert id_.startswith("deep_test_1_catalog.lactalis_pet.")
+            assert id_.startswith("deep_test_1_catalog.lactalis_pet_planner.")
 
     def test_no_em_dashes_in_content(self):
         """No em dashes allowed in user-facing strings (project style rule)."""

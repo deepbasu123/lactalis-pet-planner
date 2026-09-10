@@ -15,7 +15,7 @@ from backend.db import _merge_sql
 
 def test_merge_sql_targets_plan_line():
     sql = _merge_sql([{"sku_code": "61108", "week_key": "2026-W35", "planned_qty": 1000.0}])
-    assert "deep_test_1_catalog.lactalis_pet.plan_line" in sql
+    assert "deep_test_1_catalog.lactalis_pet_planner.plan_line" in sql
 
 
 # ── required MERGE keywords ──────────────────────────────────────────────────

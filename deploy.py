@@ -4,8 +4,8 @@ deploy.py -- Idempotent deploy for the Lactalis PET Line Planner Databricks App.
 
 Steps (in order, each logged):
   1. Build the React frontend (npm ci && npm run build in frontend/).
-  2. Create schema deep_test_1_catalog.lactalis_pet (IF NOT EXISTS).
-  3. Create the 7 Delta tables (IF NOT EXISTS).
+  2. Create schema deep_test_1_catalog.lactalis_pet_planner (IF NOT EXISTS).
+  3. CREATE OR REPLACE the 7 Delta tables with correct schemas.
   4. Load synthetic data: TRUNCATE + INSERT from data_gen.generate().
   5. Compute projection_snapshot via service.build_supply() and load it.
   6. Ensure Genie space (create or reuse by title).
@@ -19,7 +19,7 @@ Steps (in order, each logged):
 Usage:
   python deploy.py [--profile deep-test-1] [--warehouse-id <id>]
 
-Re-runnable: all steps use IF NOT EXISTS, idempotent upserts, or name-based
+Re-runnable: schema uses IF NOT EXISTS; tables use CREATE OR REPLACE; data uses
 reuse.  Running deploy.py a second time overwrites the data and re-deploys
 the app but does not duplicate resources.
 """
@@ -53,7 +53,7 @@ from backend.db import run_sql           # noqa: E402  (after path setup)
 from backend.data_gen import generate    # noqa: E402
 
 CATALOG = "deep_test_1_catalog"
-SCHEMA = "lactalis_pet"
+SCHEMA = "lactalis_pet_planner"
 APP_NAME = "lactalis-pet-planner"
 APP_DESCRIPTION = (
     "Lactalis PET Line weekly supply and production planner "
@@ -138,14 +138,16 @@ def _render_app_yaml(warehouse_id: str, genie_space_id: str) -> str:
 
 
 def _table_ddl(table_name: str) -> str:
-    """Return CREATE TABLE IF NOT EXISTS DDL for the named PET table.
+    """Return CREATE OR REPLACE TABLE DDL for the named PET table.
 
-    Pure function; tested independently.  Types follow the spec section 3.
+    Uses CREATE OR REPLACE TABLE so a pre-existing or schema-drifted table is
+    always replaced with the correct definition.  Pure function; tested
+    independently.  Types follow the spec section 3.
     """
     fqn = f"{CATALOG}.{SCHEMA}.{table_name}"
     ddl_map = {
         "sku": (
-            f"CREATE TABLE IF NOT EXISTS {fqn} (\n"
+            f"CREATE OR REPLACE TABLE {fqn} (\n"
             "  sku_code        STRING,\n"
             "  description     STRING,\n"
             "  pack_size_ml    INT,\n"
@@ -157,7 +159,7 @@ def _table_ddl(table_name: str) -> str:
             ") USING DELTA"
         ),
         "week": (
-            f"CREATE TABLE IF NOT EXISTS {fqn} (\n"
+            f"CREATE OR REPLACE TABLE {fqn} (\n"
             "  week_key         STRING,\n"
             "  horizon_index    INT,\n"
             "  week_commencing  DATE,\n"
@@ -167,14 +169,14 @@ def _table_ddl(table_name: str) -> str:
             ") USING DELTA"
         ),
         "parameter": (
-            f"CREATE TABLE IF NOT EXISTS {fqn} (\n"
+            f"CREATE OR REPLACE TABLE {fqn} (\n"
             "  name        STRING,\n"
             "  value       DOUBLE,\n"
             "  description STRING\n"
             ") USING DELTA"
         ),
         "demand": (
-            f"CREATE TABLE IF NOT EXISTS {fqn} (\n"
+            f"CREATE OR REPLACE TABLE {fqn} (\n"
             "  sku_code             STRING,\n"
             "  week_key             STRING,\n"
             "  forecast             DOUBLE,\n"
@@ -184,7 +186,7 @@ def _table_ddl(table_name: str) -> str:
             ") USING DELTA"
         ),
         "plan_line": (
-            f"CREATE TABLE IF NOT EXISTS {fqn} (\n"
+            f"CREATE OR REPLACE TABLE {fqn} (\n"
             "  sku_code    STRING,\n"
             "  week_key    STRING,\n"
             "  planned_qty DOUBLE,\n"
@@ -192,13 +194,13 @@ def _table_ddl(table_name: str) -> str:
             ") USING DELTA"
         ),
         "opening_stock": (
-            f"CREATE TABLE IF NOT EXISTS {fqn} (\n"
+            f"CREATE OR REPLACE TABLE {fqn} (\n"
             "  sku_code   STRING,\n"
             "  opening_ea DOUBLE\n"
             ") USING DELTA"
         ),
         "projection_snapshot": (
-            f"CREATE TABLE IF NOT EXISTS {fqn} (\n"
+            f"CREATE OR REPLACE TABLE {fqn} (\n"
             "  sku_code      STRING,\n"
             "  week_key      STRING,\n"
             "  horizon_index INT,\n"
@@ -304,12 +306,12 @@ def step_create_schema(w, warehouse_id: str) -> None:
 
 
 def step_create_tables(w, warehouse_id: str) -> None:
-    """Step 3: Create 7 Delta tables IF NOT EXISTS."""
+    """Step 3: CREATE OR REPLACE all 7 Delta tables with the correct schema."""
     tables = [
         "sku", "week", "parameter", "demand",
         "plan_line", "opening_stock", "projection_snapshot",
     ]
-    log.info("[3/11] Creating %d Delta tables (IF NOT EXISTS)...", len(tables))
+    log.info("[3/11] Creating or replacing %d Delta tables...", len(tables))
     for t in tables:
         ddl = _table_ddl(t)
         run_sql(warehouse_id, ddl, client=w)
@@ -466,7 +468,7 @@ def step_grant_sp(w, warehouse_id: str, genie_space_id: str, profile: str) -> No
 
     Grants applied:
       - USE CATALOG on deep_test_1_catalog  (UC)
-      - USE SCHEMA + SELECT + MODIFY on deep_test_1_catalog.lactalis_pet  (UC)
+      - USE SCHEMA + SELECT + MODIFY on deep_test_1_catalog.lactalis_pet_planner  (UC)
       - CAN_USE on the SQL warehouse  (permissions API)
       - CAN RUN on the Genie space  (permissions API -- best-effort)
 

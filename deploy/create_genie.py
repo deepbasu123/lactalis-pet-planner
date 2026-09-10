@@ -274,7 +274,7 @@ def ensure_space(
     Args:
         client:       A configured databricks.sdk.WorkspaceClient.
         catalog:      Unity Catalog catalog name (e.g. "deep_test_1_catalog").
-        schema:       Schema name within catalog (e.g. "lactalis_pet").
+        schema:       Schema name within catalog (e.g. "lactalis_pet_planner").
         warehouse_id: SQL warehouse id to attach to the Genie space.
 
     Returns:

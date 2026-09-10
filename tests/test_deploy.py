@@ -216,11 +216,19 @@ class TestTableDdl:
         with pytest.raises(KeyError):
             _table_ddl("nonexistent_table")
 
-    def test_ddl_contains_create_table_if_not_exists(self):
+    def test_ddl_uses_create_or_replace(self):
         for name in self.ALL_TABLES:
             ddl = _table_ddl(name).upper()
-            assert "CREATE TABLE IF NOT EXISTS" in ddl, (
-                f"DDL for '{name}' missing CREATE TABLE IF NOT EXISTS"
+            assert "CREATE OR REPLACE TABLE" in ddl, (
+                f"DDL for '{name}' must use CREATE OR REPLACE TABLE"
+            )
+
+    def test_ddl_does_not_use_if_not_exists(self):
+        """IF NOT EXISTS was the old pattern; every table now uses CREATE OR REPLACE."""
+        for name in self.ALL_TABLES:
+            ddl = _table_ddl(name).upper()
+            assert "IF NOT EXISTS" not in ddl, (
+                f"DDL for '{name}' still uses IF NOT EXISTS -- should be CREATE OR REPLACE TABLE"
             )
 
     def test_ddl_contains_fully_qualified_name(self):

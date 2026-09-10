@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Python 3.11 runtime (Databricks Apps). Pin all deps in `requirements.txt`.
-- Catalog/schema: `deep_test_1_catalog.lactalis_pet`. Databricks profile for local dev: `deep-test-1`.
+- Catalog/schema: `deep_test_1_catalog.lactalis_pet_planner`. Databricks profile for local dev: `deep-test-1`.
 - Brand hex: Lactalis blue `#004B85`, sky `#5BC5F2`, white background. Traffic-light hex are fixed in the spec colour table and owned server-side (engine emits colour names; frontend maps name to hex).
 - Traffic-light colour names (canonical): `dark_blue`, `light_blue`, `green`, `amber`, `red`, `dark_red`, `black`.
 - Engine defaults (open decisions): demand = max(forecast, sales_order); opening stock from `opening_stock`; ISO-8601 weeks; MLOR populated for all 11 SKUs; amber at <1 week cover; QA hold = 2 weeks. All read from the `parameter` table where a param exists.
@@ -99,7 +99,7 @@ def test_health_ok():
     assert r.json() == {"status": "ok"}
 ```
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_health.py -v` → FAIL (import error).
-- [ ] **Step 3: Implement** `backend/config.py` (pydantic `BaseSettings` reading env `PET_CATALOG`, `PET_SCHEMA`, `DATABRICKS_WAREHOUSE_ID`, `PET_GENIE_SPACE_ID`, `DATABRICKS_HOST`, with local defaults `deep_test_1_catalog` / `lactalis_pet`) and `backend/main.py` (create `app`, add `/api/health`, mount `frontend/dist` as static at `/` when it exists).
+- [ ] **Step 3: Implement** `backend/config.py` (pydantic `BaseSettings` reading env `PET_CATALOG`, `PET_SCHEMA`, `DATABRICKS_WAREHOUSE_ID`, `PET_GENIE_SPACE_ID`, `DATABRICKS_HOST`, with local defaults `deep_test_1_catalog` / `lactalis_pet_planner`) and `backend/main.py` (create `app`, add `/api/health`, mount `frontend/dist` as static at `/` when it exists).
 - [ ] **Step 4: Run to verify it passes** — `pytest tests/test_health.py -v` → PASS.
 - [ ] **Step 5: Scaffold frontend** — `npm create vite@latest frontend -- --template react-ts` (or hand-write the listed files); `App.tsx` renders the header text "PET Line Planner" and an empty tab bar. `requirements.txt` pins: `fastapi==0.115.*`, `uvicorn[standard]==0.30.*`, `pandas==2.2.*`, `databricks-sdk==0.30.*`, `databricks-sql-connector==3.*`, `pydantic-settings==2.*`, `pytest==8.*`, `httpx==0.27.*`.
 - [ ] **Step 6: Commit** — `git add -A && git commit -m "feat: scaffold backend + frontend, health endpoint"`.
@@ -342,7 +342,7 @@ def test_summary_counts_all_bands_present():
   - `db._merge_sql(rows) -> str` (pure, tested).
 - Auth: use `databricks.sdk.WorkspaceClient()` which resolves the injected SP env when deployed and the `deep-test-1` profile locally (via `DATABRICKS_CONFIG_PROFILE`). Statement execution against `Settings.warehouse_id`.
 
-- [ ] **Step 1: Write failing test** for `_merge_sql` (asserts it targets `deep_test_1_catalog.lactalis_pet.plan_line`, contains `MERGE`, `WHEN MATCHED`, and escapes numeric values). 
+- [ ] **Step 1: Write failing test** for `_merge_sql` (asserts it targets `deep_test_1_catalog.lactalis_pet_planner.plan_line`, contains `MERGE`, `WHEN MATCHED`, and escapes numeric values). 
 - [ ] **Step 2: Run to verify fail**.
 - [ ] **Step 3: Implement** read via `databricks-sql-connector` (cursor -> `fetchall_arrow().to_pandas()`), MERGE/overwrite via SDK `statement_execution.execute_statement(wait_timeout="30s")` then poll per project note (wait 5-50s then GET). Build SQL with parameter-safe numeric formatting.
 - [ ] **Step 4: Run to verify pass**.

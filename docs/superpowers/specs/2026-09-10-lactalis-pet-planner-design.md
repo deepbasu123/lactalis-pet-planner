@@ -14,7 +14,7 @@ Confirmed decisions:
 - Data: synthesized to reproduce the 11 SKUs, priorities, pack sizes and parameters shown in the screenshots; realistic forecast/receipt/demand series.
 - Genie: embedded chat panel in-app via the Conversation API, over the PET tables.
 - Scope: full parity with the screenshots (five tabs) plus the supply grid and Genie.
-- Workspace: `deep-test-1` profile. Catalog/schema: `deep_test_1_catalog.lactalis_pet`.
+- Workspace: `deep-test-1` profile. Catalog/schema: `deep_test_1_catalog.lactalis_pet_planner`.
 - Styling: light, Lactalis-branded (blue #004B85, sky #5BC5F2, white), sharp corners, generous whitespace, hosted Lactalis logo.
 - Repo: private `deepbasu123/lactalis-pet-planner`.
 
@@ -26,7 +26,7 @@ Single Databricks App (deep-test-1)
 │        │ REST/JSON
 ├── FastAPI backend  ── stock + capacity engine (Python); reads/writes UC via SQL warehouse
 │        │ Databricks SDK statement execution
-└── Unity Catalog: deep_test_1_catalog.lactalis_pet  ── base tables + projection_snapshot
+└── Unity Catalog: deep_test_1_catalog.lactalis_pet_planner  ── base tables + projection_snapshot
          │
       Genie Space over PET tables  ── embedded chat via Conversation API
 ```
@@ -35,7 +35,7 @@ The app is one unit. All logic lives in the backend; all durable data lives in U
 
 Alternatives rejected: pure SQL view (Lindley clamp awkward and slow to iterate), scheduled job (breaks the interactive edit-and-recolour loop).
 
-## 3. Data model (UC Delta, `deep_test_1_catalog.lactalis_pet`)
+## 3. Data model (UC Delta, `deep_test_1_catalog.lactalis_pet_planner`)
 
 ### sku
 | column | type | notes |
@@ -227,7 +227,7 @@ Create a Genie Space over sku, week, demand, plan_line and projection_snapshot w
 
 ## 9. Governance and deploy
 
-- App SP grants: USE CATALOG + USE SCHEMA + SELECT + MODIFY on `deep_test_1_catalog.lactalis_pet`, CAN_USE on the warehouse, CAN RUN on the Genie space.
+- App SP grants: USE CATALOG + USE SCHEMA + SELECT + MODIFY on `deep_test_1_catalog.lactalis_pet_planner`, CAN_USE on the warehouse, CAN RUN on the Genie space.
 - One deploy script: create catalog objects, load synthetic data, create Genie space, deploy the app, apply grants, verify health.
 - Repo: private `deepbasu123/lactalis-pet-planner`, env-driven config (catalog, schema, warehouse, genie space id, app name).
 

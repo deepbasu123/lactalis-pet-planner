@@ -12,14 +12,14 @@ Single Databricks App (deep-test-1)
         | REST/JSON
   FastAPI backend            stock + capacity engine; reads/writes UC via SQL warehouse
         | Databricks SDK statement execution
-  Unity Catalog: deep_test_1_catalog.lactalis_pet    base tables + projection_snapshot
+  Unity Catalog: deep_test_1_catalog.lactalis_pet_planner    base tables + projection_snapshot
         |
   Genie Space over PET tables    embedded chat via Conversation API
 ```
 
 The entire app is one deployable unit. All planning logic lives in the FastAPI backend (Python + pandas). All durable data lives in Unity Catalog Delta tables. The engine runs live on each user interaction so edits recolour the grid in real time. `projection_snapshot` is written back to UC after each save so Genie can reason about stock health using the latest computed values.
 
-## Data model (Unity Catalog, `deep_test_1_catalog.lactalis_pet`)
+## Data model (Unity Catalog, `deep_test_1_catalog.lactalis_pet_planner`)
 
 | Table | Rows | Notes |
 |---|---|---|
@@ -59,7 +59,7 @@ export PET_LIVE=1
 export DATABRICKS_CONFIG_PROFILE=deep-test-1
 export DATABRICKS_WAREHOUSE_ID=<your-warehouse-id>
 export PET_CATALOG=deep_test_1_catalog
-export PET_SCHEMA=lactalis_pet
+export PET_SCHEMA=lactalis_pet_planner
 ```
 
 then restart the backend.
@@ -89,7 +89,7 @@ The script is fully idempotent. Running it again overwrites the data and re-depl
 ## Deploy steps
 
 1. Build the React frontend (`npm ci && npm run build` in `frontend/`).
-2. Create schema `deep_test_1_catalog.lactalis_pet` (IF NOT EXISTS).
+2. Create schema `deep_test_1_catalog.lactalis_pet_planner` (IF NOT EXISTS).
 3. Create 7 Delta tables (IF NOT EXISTS).
 4. Load 11-SKU x 52-week synthetic data (TRUNCATE + INSERT).
 5. Compute `projection_snapshot` via the supply engine and load it.
@@ -99,7 +99,7 @@ The script is fully idempotent. Running it again overwrites the data and re-depl
 9. Sync source code to the workspace and deploy.
 10. Grant the app service principal:
     - `USE CATALOG` on `deep_test_1_catalog`
-    - `USE SCHEMA + SELECT + MODIFY` on `deep_test_1_catalog.lactalis_pet`
+    - `USE SCHEMA + SELECT + MODIFY` on `deep_test_1_catalog.lactalis_pet_planner`
     - `CAN_USE` on the SQL warehouse
     - `CAN RUN` on the Genie space
 11. Poll `GET /api/health` until `{"status":"ok"}` or 60 s timeout.
