@@ -1,0 +1,33 @@
+from backend.data_gen import generate
+from backend.service import build_supply, build_production, summary
+
+
+def test_supply_dense_and_coloured():
+    d = generate()
+    s = build_supply(d)
+    assert len(s) == 11 * 52
+    assert set(s["colour"]).issubset({
+        "dark_blue","light_blue","green","amber","red","dark_red","black"})
+
+
+def test_display_shows_negative_when_short():
+    d = generate()
+    s = build_supply(d)
+    shorts = s[s["raw"] < 0]
+    assert (shorts["display_value"] == shorts["raw"]).all()
+
+
+def test_edit_overlay_changes_supply():
+    d = generate()
+    base = build_supply(d)
+    overlay = {("70526","2026-W40"): 500000}   # add production
+    edited = build_supply(d, plan_overlay=overlay)
+    # some later week's close should differ after the QA offset
+    assert not base["close"].equals(edited["close"])
+
+
+def test_summary_counts_all_bands_present():
+    d = generate()
+    s = build_supply(d)
+    c = summary(s, d)["counts"]
+    assert sum(c.values()) == 11 * 52
