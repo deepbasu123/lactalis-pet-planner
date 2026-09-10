@@ -57,8 +57,54 @@ _PLAN_BASE: dict[str, float] = {
     # sum = 450 000
 }
 
-# Demand base runs slightly above plan to create natural demand pressure
-_DEMAND_SCALE: float = 1.07
+# Demand base sits below plan so most SKUs run healthy (green/blue).
+# Per-SKU prod scales and opening multipliers engineer specific bands.
+_DEMAND_SCALE: float = 0.88
+
+# Per-SKU production scale applied to every week's qty.
+#   < 1.0  -> systematic shortage (amber -> red)
+#   = 1.0  -> normal (random variation drives green/blue)
+#   > 1.0  -> over-production: stock accumulates, eventually fires black
+#
+# "61747" over-produces (1.25): combined with a moderate opening, surplus
+# builds until stock exceeds the max_cover demand window (black) from
+# mid-horizon onwards, then stays there for ~30+ weeks.
+_PROD_SCALE: dict[str, float] = {
+    "60444":  1.00,   # normal; exactly 1 dark_red in week 2 then recovery
+    "61108":  1.00,
+    "61747":  1.25,   # over-production -> black from mid-horizon
+    "61924":  1.00,
+    "70526":  1.00,
+    "70535":  1.00,
+    "228500": 1.00,
+    "228510": 0.72,   # persistent shortage -> ~44 red weeks
+    "230150": 1.00,
+    "230540": 0.68,   # persistent shortage -> ~47 red weeks
+    "230550": 0.68,   # persistent shortage -> ~47 red weeks
+}
+
+# Opening stock expressed as multiples of the first-week forecast.
+#   "60444"  1.05  -> opens just above week-1 demand: week 1 = amber,
+#                    week 2 stocks out (hi=2 <= reaction_window=3 -> dark_red),
+#                    then production kicks in and recovery begins.
+#   "61747"  8.00  -> moderate initial buffer; over-production surplus
+#                    accumulates and pushes stock above the max_cover
+#                    demand window around week 19 (black band ~weeks 19-52).
+#   shortage SKUs  -> low opening so shortage starts in weeks 2-4
+#   healthy SKUs   -> 3.5x for a balanced green/light_blue/dark_blue split
+_OPENING_MULT: dict[str, float] = {
+    "60444":  1.05,
+    "61108":  3.5,
+    "61747":  8.0,
+    "61924":  3.5,
+    "70526":  3.5,
+    "70535":  3.5,
+    "228500": 3.5,
+    "228510": 2.5,
+    "230150": 3.5,
+    "230540": 2.0,
+    "230550": 2.0,
+}
 
 # ---------------------------------------------------------------------------
 # Parameters (values from the Parameters screenshot)
@@ -191,23 +237,24 @@ def generate(seed: int = 42) -> dict[str, pd.DataFrame]:
     #
     # Deliberate realism:
     #   - Full maintenance week  -> 0 production for all SKUs
-    #   - Partial maintenance    -> 50% of base
-    #   - Normal weeks           -> base * random [0.88, 1.12] factor
-    # This produces a mix of over-production and under-production vs demand,
-    # giving the engine plenty of amber/red/dark-blue cells to colour later.
+    #   - Partial maintenance    -> 50% of base (scaled by _PROD_SCALE)
+    #   - Normal weeks           -> base * _PROD_SCALE * random [0.88, 1.12]
+    #
+    # Per-SKU _PROD_SCALE < 1 creates persistent shortages (amber/red).
     # ------------------------------------------------------------------
     plan_records = []
     for code, *_ in _SKU_ROWS:
         base = _PLAN_BASE[code]
+        ps = _PROD_SCALE[code]
         for wi, wk in enumerate(week_keys):
             hi = wi + 1
             if hi == _FULL_MAINT_INDEX:
                 qty = 0.0
             elif hi == _PARTIAL_MAINT_INDEX:
-                qty = float(round(base * 0.5))
+                qty = float(round(base * 0.5 * ps))
             else:
                 factor = float(rng.uniform(0.88, 1.12))
-                qty = float(round(base * factor))
+                qty = float(round(base * ps * factor))
             plan_records.append({
                 "sku_code":    code,
                 "week_key":    wk,
@@ -217,7 +264,13 @@ def generate(seed: int = 42) -> dict[str, pd.DataFrame]:
     plan_df = pd.DataFrame(plan_records)
 
     # ------------------------------------------------------------------
-    # 6. Opening stock  (~2.5 weeks of early forecast per SKU)
+    # 6. Opening stock — per-SKU multiplier of first-week forecast
+    #
+    # _OPENING_MULT drives the colour distribution:
+    #   "60444"  0.25 -> opens below week-1 demand -> dark_red in week 1
+    #   "61747" 16.00 -> opens above max_cover demand window -> black band
+    #   shortage SKUs -> low opening, shortage starts in weeks 2-4
+    #   healthy SKUs  -> generous opening for an early green/dark_blue block
     # ------------------------------------------------------------------
     first_wk = week_keys[0]
     opening_records = []
@@ -230,7 +283,7 @@ def generate(seed: int = 42) -> dict[str, pd.DataFrame]:
         )
         opening_records.append({
             "sku_code":   code,
-            "opening_ea": float(round(first_fcst * 2.5)),
+            "opening_ea": float(round(first_fcst * _OPENING_MULT[code])),
         })
     opening_df = pd.DataFrame(opening_records)
 

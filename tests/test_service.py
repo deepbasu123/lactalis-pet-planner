@@ -31,3 +31,15 @@ def test_summary_counts_all_bands_present():
     s = build_supply(d)
     c = summary(s, d)["counts"]
     assert sum(c.values()) == 11 * 52
+
+
+def test_distribution_spans_bands():
+    """Regression: seed-42 grid must cover all 7 bands and have a healthy majority."""
+    d = generate()
+    s = build_supply(d)
+    c = summary(s, d)["counts"]
+    all_bands = {"dark_blue", "light_blue", "green", "amber", "red", "dark_red", "black"}
+    for band in all_bands:
+        assert c.get(band, 0) >= 1, f"band {band!r} is missing (count=0)"
+    healthy = c.get("green", 0) + c.get("light_blue", 0) + c.get("dark_blue", 0)
+    assert healthy >= 250, f"healthy count {healthy} < 250"
