@@ -81,3 +81,12 @@ class RecalcResponse(BaseModel):
     supply: SupplyResponse
     production: ProductionResponse
     summary: SummaryResponse
+
+
+# ---------------------------------------------------------------------------
+# Genie proxy request model
+# ---------------------------------------------------------------------------
+
+class GenieAskRequest(BaseModel):
+    question: str
+    conversation_id: str | None = None

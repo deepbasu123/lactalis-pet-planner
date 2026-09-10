@@ -42,6 +42,7 @@ from backend.models import (
     DiscardResponse,
     EditRequest,
     EditResponse,
+    GenieAskRequest,
     ProductionResponse,
     RecalcResponse,
     ResetWeekRequest,
@@ -434,6 +435,47 @@ def api_recalc(request: Request, response: Response) -> RecalcResponse:
             original_vs_plan=SummaryOrigVsPlan(original=original, working=working),
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/genie/ask  -- start or continue a Genie conversation
+# GET  /api/genie/poll -- fetch message status and response text
+# ---------------------------------------------------------------------------
+
+@app.post("/api/genie/ask")
+def api_genie_ask(body: GenieAskRequest) -> dict:
+    """Proxy a question to the configured Genie space.
+
+    Starts a new conversation when conversation_id is absent; continues an
+    existing one when it is supplied.  Returns {conversation_id, message_id}
+    so the caller can poll for the answer.
+
+    Returns HTTP 503 when PET_GENIE_SPACE_ID is not configured.
+    """
+    if not settings.genie_space_id:
+        raise HTTPException(
+            status_code=503,
+            detail="Genie is not configured yet.",
+        )
+    from backend import genie
+    return genie.ask(settings.genie_space_id, body.question, body.conversation_id)
+
+
+@app.get("/api/genie/poll")
+def api_genie_poll(conversation_id: str, message_id: str) -> dict:
+    """Poll the status of a Genie message.
+
+    Returns {status, text} and, when present, {sql}.
+
+    Returns HTTP 503 when PET_GENIE_SPACE_ID is not configured.
+    """
+    if not settings.genie_space_id:
+        raise HTTPException(
+            status_code=503,
+            detail="Genie is not configured yet.",
+        )
+    from backend import genie
+    return genie.poll(settings.genie_space_id, conversation_id, message_id)
 
 
 # ---------------------------------------------------------------------------
