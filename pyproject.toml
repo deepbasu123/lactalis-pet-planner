@@ -1,3 +1,11 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+filterwarnings = [
+    # pydantic-settings: "schema" field name shadows a BaseSettings attribute — benign,
+    # attribute works correctly; targeted to this specific message only.
+    "ignore:Field name .schema. in .Settings. shadows an attribute in parent:UserWarning",
+    # starlette testclient imports an anyio alias that is deprecated in newer anyio versions;
+    # not under our control and unrelated to app logic.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
