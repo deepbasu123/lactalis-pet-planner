@@ -54,14 +54,15 @@ export interface SupplyCell {
   week_key: string;
   horizon_index: number;
   opening: number;
-  recv: number;    // QA-cleared receipts this week
-  prod: number;    // production planned this week
-  demand: number;  // demand consumed this week
-  raw: number;     // closePrev + recv - demand (can be negative)
-  close: number;   // max(0, raw)
+  recv: number;          // QA-cleared receipts this week
+  prod: number;          // production planned this week
+  demand: number;        // demand consumed this week
+  raw: number;           // closePrev + recv - demand (can be negative)
+  close: number;         // max(0, raw)
   cover_weeks: number;
   severity: number;
-  colour: string;  // ColourName
+  colour: string;        // ColourName
+  display_value?: number; // raw when negative (shortage gap), else close
 }
 
 export interface SupplyResponse {

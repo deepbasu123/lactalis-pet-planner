@@ -242,47 +242,6 @@ button {
   flex: 1;
 }
 
-/* ── Supply grid hero slot ───────────────────────────── */
-.supply-hero {
-  background: var(--bg);
-  border-bottom: 1px solid var(--border-light);
-  padding: var(--sp-4) var(--sp-6);
-}
-
-.supply-hero-inner {
-  border: 2px dashed var(--border);
-  border-left: 4px solid var(--lac-blue);
-  border-radius: var(--radius-sm);
-  background: var(--surface-1);
-  padding: var(--sp-6);
-  min-height: 120px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: var(--sp-2);
-}
-
-.supply-hero-label {
-  font-size: var(--text-xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.10em;
-  color: var(--lac-blue);
-}
-
-.supply-hero-title {
-  font-size: var(--text-lg);
-  font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: -0.01em;
-}
-
-.supply-hero-desc {
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-  line-height: 1.6;
-}
-
 /* ── Tab content area ────────────────────────────────── */
 .tab-content {
   flex: 1;
@@ -369,7 +328,6 @@ button {
 }
 
 .error-card p {
-  font-size: var(--text-base);
   color: var(--text-secondary);
   margin-bottom: var(--sp-5);
   line-height: 1.6;

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import './theme.css';
 import Header from './components/Header';
+import SupplyGrid from './components/SupplyGrid';
 import { fetchConfig } from './api';
 import type { ConfigResponse } from './api';
 
@@ -63,12 +64,9 @@ function LoadingShell() {
           />
         ))}
       </div>
-      {/* Hero placeholder skeleton */}
-      <div className="supply-hero">
-        <div className="skeleton" style={{ height: 120 }} />
-      </div>
-      {/* Content skeleton */}
+      {/* Tab content skeleton (mirrors the production tab with SupplyGrid at top) */}
       <div className="tab-content">
+        <div className="skeleton" style={{ height: 340, marginBottom: 16, borderRadius: 2 }} />
         <div className="skeleton" style={{ width: 280, height: 24, marginBottom: 12 }} />
         <div className="skeleton" style={{ width: 420, height: 16, marginBottom: 8 }} />
         <div className="skeleton" style={{ width: 360, height: 16 }} />
@@ -110,22 +108,6 @@ function PlaceholderPanel({ title, desc }: PlaceholderPanelProps) {
     <div className="placeholder-panel">
       <h2>{title}</h2>
       <p>{desc}</p>
-    </div>
-  );
-}
-
-// ── Supply grid hero placeholder ──────────────────────────────────────────────
-
-function SupplyHeroSlot() {
-  return (
-    <div className="supply-hero">
-      <div className="supply-hero-inner">
-        <span className="supply-hero-label">Traffic Light Supply Grid</span>
-        <span className="supply-hero-title">Supply forecast grid — 11 SKUs x 52 weeks</span>
-        <span className="supply-hero-desc">
-          Colour-coded cells show forward cover: dark blue (excess) through green, amber, and red to dark red (lost sale). Horizontal scroll with sticky SKU column. This slot is filled by the Supply Grid component in a later task.
-        </span>
-      </div>
     </div>
   );
 }
@@ -176,9 +158,6 @@ export default function App() {
       {/* ── Fixed header ──────────────────────────────── */}
       <Header runMeta={config?.run_meta} />
 
-      {/* ── Supply grid hero (always visible) ─────────── */}
-      <SupplyHeroSlot />
-
       {/* ── Tab navigation ────────────────────────────── */}
       <nav className="tab-nav" role="tablist" aria-label="Planner tabs">
         {TABS.map((tab) => (
@@ -203,10 +182,24 @@ export default function App() {
         aria-labelledby={`tab-${activeTab}`}
         className="tab-content"
       >
-        <PlaceholderPanel
-          title={activeTabDef.label}
-          desc={activeTabDef.desc}
-        />
+        {activeTab === 'production' ? (
+          <>
+            {/* Supply grid is the hero at the top of the Production Grid tab */}
+            <SupplyGrid />
+            {/* Editable production grid fills this space in a later task */}
+            <div style={{ marginTop: 'var(--sp-6)' }}>
+              <PlaceholderPanel
+                title="Production Grid"
+                desc={activeTabDef.desc}
+              />
+            </div>
+          </>
+        ) : (
+          <PlaceholderPanel
+            title={activeTabDef.label}
+            desc={activeTabDef.desc}
+          />
+        )}
       </main>
     </div>
   );
