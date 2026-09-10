@@ -628,40 +628,73 @@ def _grant_genie_space(w, genie_space_id: str, sp_name: str) -> None:
     )
 
 
-def step_health_check(app_url: str, timeout_s: int = 60) -> None:
-    """Step 11: Poll GET /api/health until {status: ok} or timeout."""
-    if not app_url:
-        log.warning("[11/11] No app URL available, skipping health check.")
+def step_health_check(app_url: str, w=None, timeout_s: int = 60) -> None:
+    """Step 11: Poll app state via the SDK until running/active or timeout.
+
+    The previous approach (unauthenticated urllib GET to /api/health) never
+    succeeded because Databricks Apps require workspace auth.  A raw request
+    gets a login redirect, not ``{"status": "ok"}``.
+
+    This version polls ``w.apps.get(APP_NAME)`` and inspects the
+    ``app_status.state`` field.  The app URL is printed so it can be opened
+    manually without waiting for the poll to complete.  The check is
+    non-fatal: a timeout (or missing SDK client) logs a warning and returns.
+    """
+    log.info("[11/11] Waiting for app '%s' to reach running state (timeout=%ds)...",
+             APP_NAME, timeout_s)
+    if app_url:
+        log.info("  App URL: %s", app_url)
+
+    if w is None:
+        log.warning("  No SDK client available -- health check skipped.")
         return
 
-    health_url = app_url.rstrip("/") + "/api/health"
-    log.info("[11/11] Health-checking %s (timeout=%ds)...", health_url, timeout_s)
+    # Terminal active states and terminal error states
+    _RUNNING = frozenset({"RUNNING", "ACTIVE", "AVAILABLE"})
+    _ERROR = frozenset({"ERROR", "FAILED", "CRASHED", "UNAVAILABLE"})
 
     deadline = time.monotonic() + timeout_s
     attempt = 0
     while time.monotonic() < deadline:
         attempt += 1
         try:
-            with urllib.request.urlopen(health_url, timeout=10) as resp:
-                import json as _json
-                body = _json.loads(resp.read().decode())
-                if body.get("status") == "ok":
-                    log.info("  Health check PASSED (attempt %d). App is live: %s",
-                             attempt, app_url)
-                    return
-                log.info("  Attempt %d: unexpected body %s", attempt, body)
-        except urllib.error.HTTPError as exc:
-            log.info("  Attempt %d: HTTP %s", attempt, exc.code)
+            app_info = w.apps.get(APP_NAME)
+            app_status = getattr(app_info, "app_status", None)
+            compute_status = getattr(app_info, "compute_status", None)
+
+            app_state = (
+                str(getattr(app_status, "state", "")).upper()
+                if app_status else ""
+            )
+            compute_state = (
+                str(getattr(compute_status, "state", "")).upper()
+                if compute_status else ""
+            )
+
+            log.info(
+                "  Attempt %d: app_state=%s compute_state=%s",
+                attempt, app_state or "?", compute_state or "?",
+            )
+
+            if app_state in _RUNNING:
+                log.info("  App is running. URL: %s", app_url or "(see Apps console)")
+                return
+            if app_state in _ERROR:
+                log.warning(
+                    "  App reached error state '%s'. Check the Databricks Apps console.",
+                    app_state,
+                )
+                return
         except Exception as exc:
-            log.info("  Attempt %d: %s", attempt, exc)
+            log.info("  Attempt %d: SDK error: %s", attempt, exc)
 
         time.sleep(5)
 
     log.warning(
-        "  Health check timed out after %ds. The app may still be starting up. "
-        "Re-run the health check manually: curl %s",
+        "  Health check timed out after %ds. The app may still be starting. "
+        "App URL: %s",
         timeout_s,
-        health_url,
+        app_url or "(see Apps console)",
     )
 
 
@@ -742,8 +775,8 @@ def main() -> None:
     # Step 10: grants
     step_grant_sp(w, warehouse_id, genie_space_id, args.profile)
 
-    # Step 11: health check
-    step_health_check(app_url)
+    # Step 11: health check (SDK-based state polling, non-fatal on timeout)
+    step_health_check(app_url, w=w)
 
     log.info("=== Deploy complete ===")
     log.info("App URL: %s", app_url or "(check the Apps console)")

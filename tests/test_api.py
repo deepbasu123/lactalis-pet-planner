@@ -5,7 +5,9 @@ synthetic data produced by data_gen.generate() -- no Databricks workspace
 needed.
 """
 import json
+from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -338,3 +340,125 @@ class TestPutEndpoints:
         """PUT /api/skus with an unknown sku_code returns HTTP 404."""
         r = _put_client.put("/api/skus", json={"sku_code": "NOSUCHSKU"})
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# C2 regression: save overlay conversion (live mode)
+# ---------------------------------------------------------------------------
+
+class TestSaveOverlayConversion:
+    """C2: POST /api/production/save must convert overlay dict to a rows list.
+
+    In live mode (PET_LIVE=1) the endpoint previously passed the overlay dict
+    directly to db.merge_plan_lines(), which iterates it as if it were a list
+    of row dicts -- this caused a TypeError.
+
+    Strategy: edit endpoints run WITHOUT PET_LIVE so the synthetic dataset is
+    loaded into the module cache.  PET_LIVE=1 is set only immediately before
+    the save call so the live-mode branch executes with the cached synthetic
+    data and mocked db functions -- no Databricks workspace needed.
+    """
+
+    def setup_method(self, _method):
+        """Clear dataset cache and session overlays before each test."""
+        import os
+        os.environ.pop("PET_LIVE", None)  # ensure synthetic mode during edit
+        from backend.main import refresh_dataset, _SESSION_OVERLAYS
+        refresh_dataset()
+        _SESSION_OVERLAYS.clear()
+
+    def teardown_method(self, _method):
+        """Restore clean state and unset PET_LIVE so other tests are unaffected."""
+        import os
+        os.environ.pop("PET_LIVE", None)
+        from backend.main import refresh_dataset, _SESSION_OVERLAYS
+        refresh_dataset()
+        _SESSION_OVERLAYS.clear()
+
+    # Reusable empty DataFrame matching the snapshot column shape
+    _EMPTY_DF = pd.DataFrame(columns=[
+        "sku_code", "week_key", "horizon_index", "opening", "recv",
+        "prod", "demand", "raw", "close", "cover_weeks", "severity", "colour",
+    ])
+
+    def test_save_builds_rows_list_for_merge(self, monkeypatch):
+        """Overlay dict is converted to [{sku_code, week_key, planned_qty}] for merge."""
+        save_client = TestClient(app)
+
+        # Edit WITHOUT PET_LIVE -> loads synthetic dataset into cache
+        r_edit = save_client.post("/api/production/edit", json={
+            "sku_code": "61108", "week_key": "2026-W38", "qty": 500.0,
+        })
+        assert r_edit.status_code == 200
+
+        # Switch to live mode ONLY for the save call; dataset is already cached
+        monkeypatch.setenv("PET_LIVE", "1")
+        mock_merge = MagicMock()
+
+        with patch("backend.db.merge_plan_lines", mock_merge), \
+             patch("backend.db.write_snapshot"), \
+             patch("backend.service.build_supply", return_value=self._EMPTY_DF):
+            r_save = save_client.post("/api/production/save")
+
+        assert r_save.status_code == 200
+        assert r_save.json()["saved"] == 1
+
+        # merge_plan_lines must have been called with a LIST (not a dict)
+        mock_merge.assert_called_once()
+        rows_arg = mock_merge.call_args[0][0]
+        assert isinstance(rows_arg, list), (
+            f"merge_plan_lines must receive a list, got {type(rows_arg).__name__}"
+        )
+        assert len(rows_arg) == 1
+        row = rows_arg[0]
+        assert isinstance(row, dict)
+        assert row["sku_code"] == "61108"
+        assert row["week_key"] == "2026-W38"
+        assert row["planned_qty"] == pytest.approx(500.0)
+
+    def test_empty_overlay_does_not_call_merge(self, monkeypatch):
+        """With no pending edits, merge_plan_lines must NOT be called at all."""
+        save_client = TestClient(app)
+
+        # Load synthetic dataset into cache (no edit needed, just hit /api/config)
+        save_client.get("/api/config")
+
+        # Switch to live mode; overlay is empty
+        monkeypatch.setenv("PET_LIVE", "1")
+        mock_merge = MagicMock()
+
+        with patch("backend.db.merge_plan_lines", mock_merge), \
+             patch("backend.db.write_snapshot"), \
+             patch("backend.service.build_supply", return_value=self._EMPTY_DF):
+            r_save = save_client.post("/api/production/save")
+
+        assert r_save.status_code == 200
+        mock_merge.assert_not_called()
+
+    def test_save_multi_row_overlay_all_rows_present(self, monkeypatch):
+        """Multiple overlay entries all land in the rows list."""
+        save_client = TestClient(app)
+
+        # Edit two different cells WITHOUT PET_LIVE
+        save_client.post("/api/production/edit", json={
+            "sku_code": "61108", "week_key": "2026-W38", "qty": 100.0,
+        })
+        save_client.post("/api/production/edit", json={
+            "sku_code": "61747", "week_key": "2026-W39", "qty": 200.0,
+        })
+
+        monkeypatch.setenv("PET_LIVE", "1")
+        mock_merge = MagicMock()
+
+        with patch("backend.db.merge_plan_lines", mock_merge), \
+             patch("backend.db.write_snapshot"), \
+             patch("backend.service.build_supply", return_value=self._EMPTY_DF):
+            r_save = save_client.post("/api/production/save")
+
+        assert r_save.status_code == 200
+        rows_arg = mock_merge.call_args[0][0]
+        assert isinstance(rows_arg, list)
+        assert len(rows_arg) == 2
+        keys = {(r["sku_code"], r["week_key"]) for r in rows_arg}
+        assert ("61108", "2026-W38") in keys
+        assert ("61747", "2026-W39") in keys

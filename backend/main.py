@@ -351,7 +351,16 @@ def api_production_save(request: Request, response: Response) -> SaveResponse:
     if os.environ.get("PET_LIVE") == "1":
         from backend import db, service
         ds = get_dataset()
-        db.merge_plan_lines(overlay)
+        # Convert the overlay dict {(sku_code, week_key): qty} to the list-of-
+        # dicts format that merge_plan_lines expects.  Skip the call entirely
+        # when the overlay is empty -- merge_plan_lines raises ValueError on an
+        # empty list and there is nothing to write.
+        rows = [
+            {"sku_code": s, "week_key": wk, "planned_qty": q}
+            for (s, wk), q in overlay.items()
+        ]
+        if rows:
+            db.merge_plan_lines(rows)
         supply_df = service.build_supply(ds, plan_overlay=overlay)
         db.write_snapshot(supply_df)
         refresh_dataset()

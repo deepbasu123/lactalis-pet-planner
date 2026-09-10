@@ -16,4 +16,4 @@ env:
   - name: PET_GENIE_SPACE_ID
     value: ""
   - name: PET_LIVE
-    value: "1"
+    value: "0"

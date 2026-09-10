@@ -135,21 +135,89 @@ def _run_sql(sql: str):
     return run_sql(settings.warehouse_id, sql)
 
 
+# ── manifest type coercion constants and helper ──────────────────────────────
+
+# Statement-exec returns every value as a string.  These sets map DDL type
+# categories to their coercion target so read_table can convert by the
+# manifest schema rather than blindly calling pd.to_numeric.
+
+_INT_TYPES = frozenset(
+    {"INT", "INTEGER", "BIGINT", "LONG", "SMALLINT", "SHORT", "BYTE"}
+)
+_FLOAT_TYPES = frozenset({"DOUBLE", "FLOAT", "DECIMAL"})
+_BOOL_TYPES = frozenset({"BOOLEAN", "BOOL"})
+
+
+def _col_type_str(type_name) -> str:
+    """Normalise a manifest column type_name to an upper-case string.
+
+    Handles the SDK ColumnInfoTypeName enum (has a .value attribute whose
+    value is the bare type name, e.g. ``"BOOLEAN"``) as well as plain strings
+    used in test mocks.  Strips any class-name prefix so
+    ``"ColumnInfoTypeName.BOOLEAN"`` also works.
+    """
+    if type_name is None:
+        return ""
+    val = getattr(type_name, "value", None)
+    if val is not None:
+        return str(val).upper()
+    # Fallback: strip any dotted prefix (handles str(enum) representations)
+    return str(type_name).rsplit(".", 1)[-1].upper()
+
+
 # ── public interface ─────────────────────────────────────────────────────────
+
+# Exact column names that exist in the projection_snapshot Delta table (see
+# deploy.py step_load_snapshot and the DDL in _table_ddl).  write_snapshot
+# must emit only these columns; build_supply returns extras like display_value
+# that would break the INSERT.
+_SNAPSHOT_COLS = [
+    "sku_code", "week_key", "horizon_index",
+    "opening", "recv", "prod", "demand",
+    "raw", "close", "cover_weeks", "severity", "colour",
+    "updated_at",
+]
+
 
 def read_table(name: str) -> pd.DataFrame:
     """
     SELECT * from the fully-qualified table and return as a DataFrame.
 
-    Column types from the manifest are used to coerce numeric columns; string
-    columns are left as-is.
+    Column types are coerced from the statement-exec all-string representation
+    to their declared manifest types:
+
+    * BOOLEAN / BOOL  -> Python bool (``"true"`` -> True, anything else -> False)
+    * INT / LONG etc. -> pandas Int64 (nullable integer)
+    * DOUBLE / FLOAT / DECIMAL -> float64
+    * STRING and everything else -> str (left as-is)
+
+    This is essential in live mode where the SQL Statement Execution API
+    returns every value as a string regardless of the column DDL type.
     """
     resp = _run_sql(f"SELECT * FROM {_fqn(name)}")
     cols = [c.name for c in resp.manifest.schema.columns]
     rows = resp.result.data_array or []
     df = pd.DataFrame(rows, columns=cols)
-    for col in cols:
-        df[col] = pd.to_numeric(df[col], errors="ignore")
+
+    for col_info in resp.manifest.schema.columns:
+        col_name = col_info.name
+        if col_name not in df.columns:
+            continue
+        type_str = _col_type_str(col_info.type_name)
+
+        if type_str in _BOOL_TYPES:
+            # Cast string "true"/"false" (case-insensitive) to Python bool.
+            # Non-string values are coerced via bool() so pre-typed datasets
+            # (synthetic/test) continue to work unchanged.
+            df[col_name] = df[col_name].apply(
+                lambda v: (v.lower() == "true") if isinstance(v, str) else bool(v)
+            )
+        elif type_str in _INT_TYPES:
+            df[col_name] = pd.to_numeric(df[col_name], errors="coerce").astype("Int64")
+        elif type_str in _FLOAT_TYPES:
+            df[col_name] = pd.to_numeric(df[col_name], errors="coerce").astype(float)
+        # STRING and all other types: leave as-is
+
     return df
 
 
@@ -274,11 +342,21 @@ def write_snapshot(df: pd.DataFrame) -> None:
     Adds an updated_at timestamp column then issues TRUNCATE + INSERT so
     that Genie sees up-to-date projection data after every save. The table
     must already exist (created by the deploy script).
+
+    Only the exact columns defined in the projection_snapshot DDL are
+    inserted.  Extra columns returned by build_supply (e.g. display_value)
+    are silently dropped before the INSERT so the statement does not
+    reference columns that do not exist in the table.
     """
     import datetime
 
     df = df.copy()
     df["updated_at"] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Keep only the columns that the table DDL declares; drop anything extra
+    # (build_supply returns display_value and potentially other derived cols).
+    snap_cols = [c for c in _SNAPSHOT_COLS if c in df.columns]
+    df = df[snap_cols]
 
     table = _fqn("projection_snapshot")
     _run_sql(f"TRUNCATE TABLE {table}")
