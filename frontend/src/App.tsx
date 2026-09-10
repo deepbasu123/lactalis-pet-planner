@@ -173,6 +173,14 @@ export default function App() {
     setDataVersion((v) => v + 1);
   }, []);
 
+  /**
+   * liveTotal — current total production (EA) as reported by ProductionGrid
+   * via its onTotalUpdate callback.  Overrides the static meta.total_production
+   * in the header chip so it reflects the current working plan.
+   */
+  const [liveTotal, setLiveTotal] = useState<number | null>(null);
+  const handleTotalUpdate = useCallback((t: number) => setLiveTotal(t), []);
+
   useEffect(() => {
     setLoading(true);
     setError(null);
@@ -205,10 +213,15 @@ export default function App() {
 
   const activeTabDef = TABS.find((t) => t.id === activeTab) ?? TABS[0];
 
+  // Merge liveTotal into meta so the header chip reflects the current editing state.
+  const displayMeta = config?.meta
+    ? { ...config.meta, total_production: liveTotal ?? config.meta.total_production }
+    : undefined;
+
   return (
     <div className="app-layout">
       {/* ── Fixed header ──────────────────────────────── */}
-      <Header runMeta={config?.meta} />
+      <Header runMeta={displayMeta} />
 
       {/* ── Tab navigation ────────────────────────────── */}
       <nav className="tab-nav" role="tablist" aria-label="Planner tabs">
@@ -246,6 +259,7 @@ export default function App() {
               skus={config?.skus ?? []}
               dataVersion={dataVersion}
               onDataChange={bumpDataVersion}
+              onTotalUpdate={handleTotalUpdate}
             />
           </>
         ) : (

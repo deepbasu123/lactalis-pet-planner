@@ -28,7 +28,6 @@ import {
 import type { PlanCell, WeekFlags, Week, SKU } from '../api';
 import { formatValue, isoWeekLabel, fmtShortDate } from './supplyGridHelpers';
 import {
-  computeDirtyCount,
   formatBreachMessage,
   collectBreaches,
   buildServerMap,
@@ -66,8 +65,12 @@ function LockIcon({ size = 12 }: { size?: number }) {
 
 // ── Capacity validation banner ─────────────────────────────────────────────────
 
+const BREACH_PREVIEW_COUNT = 6;
+
 function ValidationBanner({ weekFlags }: { weekFlags: Record<string, WeekFlags> }) {
+  const [showAll, setShowAll] = useState(false);
   const breaches = collectBreaches(weekFlags ?? {});
+
   if (breaches.length === 0) {
     return (
       <div className="pg-banner pg-banner--ok" role="status" aria-live="polite">
@@ -76,6 +79,10 @@ function ValidationBanner({ weekFlags }: { weekFlags: Record<string, WeekFlags> 
       </div>
     );
   }
+
+  const visible = showAll ? breaches : breaches.slice(0, BREACH_PREVIEW_COUNT);
+  const hidden = breaches.length - BREACH_PREVIEW_COUNT;
+
   return (
     <div className="pg-banner pg-banner--breach" role="alert">
       <span className="pg-banner-icon" aria-hidden="true">!</span>
@@ -84,10 +91,21 @@ function ValidationBanner({ weekFlags }: { weekFlags: Record<string, WeekFlags> 
           {breaches.length} capacity breach{breaches.length > 1 ? 'es' : ''} detected
         </span>
         <ul className="pg-banner-list">
-          {breaches.map((b, i) => (
+          {visible.map((b, i) => (
             <li key={i}>{formatBreachMessage(b)}</li>
           ))}
         </ul>
+        {breaches.length > BREACH_PREVIEW_COUNT && (
+          <button
+            className="pg-banner-toggle"
+            onClick={() => setShowAll((s) => !s)}
+            aria-expanded={showAll}
+          >
+            {showAll
+              ? 'Show fewer'
+              : `Show all ${breaches.length} breaches (${hidden} more)`}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -140,6 +158,8 @@ interface ProductionGridProps {
   skus: SKU[];
   dataVersion: number;
   onDataChange: () => void;
+  /** Called whenever the computed total production changes (for the header chip). */
+  onTotalUpdate?: (total: number) => void;
 }
 
 export default function ProductionGrid({
@@ -147,6 +167,7 @@ export default function ProductionGrid({
   skus,
   dataVersion,
   onDataChange,
+  onTotalUpdate,
 }: ProductionGridProps) {
   // ── Server state ─────────────────────────────────────────────────────────────
   const [serverRows, setServerRows] = useState<PlanCell[]>([]);
@@ -159,6 +180,17 @@ export default function ProductionGrid({
   // ── Local edit state ──────────────────────────────────────────────────────────
   // key format: "skuCode|weekKey"  e.g. "60444|2026-W35"
   const [dirtyMap, setDirtyMap] = useState<Record<string, number>>({});
+
+  /**
+   * editedKeys tracks WHICH cells have been successfully edited (i.e. the server
+   * accepted the edit and the overlay was updated). This is separate from dirtyMap
+   * (which stores the displayed optimistic value) because dataVersion changes cause
+   * a production re-fetch that resets serverRows to overlay-applied values — which
+   * would make computeDirtyCount see 0. editedKeys persists independently until
+   * Save or Discard explicitly clears it.
+   */
+  const [editedKeys, setEditedKeys] = useState<Set<string>>(new Set());
+
   const [editingCell, setEditingCell] = useState<{
     skuCode: string;
     weekKey: string;
@@ -226,10 +258,16 @@ export default function ProductionGrid({
     return totals;
   }, [serverTotals, dirtyMap, serverMap]);
 
-  const dirtyCount = useMemo(
-    () => computeDirtyCount(dirtyMap, serverRows),
-    [dirtyMap, serverRows],
-  );
+  // dirtyCount is the size of editedKeys (not computed from dirtyMap vs serverRows,
+  // which resets every re-fetch). editedKeys persists across re-fetches.
+  const dirtyCount = editedKeys.size;
+
+  // Live total production (sum of per-week adjusted totals) for the header chip.
+  useEffect(() => {
+    if (!onTotalUpdate) return;
+    const total = Object.values(computedTotals).reduce((s, v) => s + v, 0);
+    onTotalUpdate(total);
+  }, [computedTotals, onTotalUpdate]);
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -240,11 +278,9 @@ export default function ProductionGrid({
     return serverMap.get(key)?.planned_qty ?? 0;
   }
 
+  // A cell is "dirty" if it has been successfully edited since the last save/discard.
   function isDirtyCell(skuCode: string, weekKey: string): boolean {
-    const key = `${skuCode}|${weekKey}`;
-    if (!(key in dirtyMap)) return false;
-    const serverQty = serverMap.get(key)?.planned_qty ?? 0;
-    return Math.round(dirtyMap[key]) !== Math.round(serverQty);
+    return editedKeys.has(`${skuCode}|${weekKey}`);
   }
 
   // ── Edit actions ──────────────────────────────────────────────────────────────
@@ -261,7 +297,8 @@ export default function ProductionGrid({
 
       try {
         await editCell({ sku_code: skuCode, week_key: weekKey, qty: clampedQty });
-        // Success: trigger supply grid recolour
+        // Success: mark cell dirty and trigger supply grid recolour.
+        setEditedKeys((prev) => new Set([...prev, key]));
         onDataChange();
         setLockMessages((prev) => {
           const n = { ...prev };
@@ -374,6 +411,7 @@ export default function ProductionGrid({
       setServerTotals(fresh.week_totals ?? {});
       setWeekFlagsState(fresh.week_flags ?? {});
       setDirtyMap({});
+      setEditedKeys(new Set());
       onDataChange();
       // Show success toast
       setSaveToast(true);
@@ -396,6 +434,7 @@ export default function ProductionGrid({
       setServerTotals(fresh.week_totals ?? {});
       setWeekFlagsState(fresh.week_flags ?? {});
       setDirtyMap({});
+      setEditedKeys(new Set());
       setEditingCell(null);
       onDataChange();
     } catch (err) {
@@ -415,12 +454,20 @@ export default function ProductionGrid({
       setServerRows(fresh.rows ?? []);
       setServerTotals(fresh.week_totals ?? {});
       setWeekFlagsState(fresh.week_flags ?? {});
-      // Remove dirty entries for the reset week
+      // Remove dirty/edited entries for the reset week
       setDirtyMap((prev) => {
         const n = { ...prev };
         for (const key of Object.keys(n)) {
           const [, wk] = key.split('|');
           if (wk === targetWeek) delete n[key];
+        }
+        return n;
+      });
+      setEditedKeys((prev) => {
+        const n = new Set(prev);
+        for (const key of [...n]) {
+          const [, wk] = key.split('|');
+          if (wk === targetWeek) n.delete(key);
         }
         return n;
       });

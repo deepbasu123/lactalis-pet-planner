@@ -252,6 +252,30 @@
   letter-spacing: 0.01em;
 }
 
+.pg-banner-toggle {
+  margin-top: 4px;
+  padding: 2px 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  font-family: var(--font-sans);
+  color: inherit;
+  background: none;
+  border: none;
+  text-decoration: underline;
+  cursor: pointer;
+  opacity: 0.8;
+  letter-spacing: 0.01em;
+}
+
+.pg-banner-toggle:hover {
+  opacity: 1;
+}
+
+.pg-banner-toggle:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 /* ── Toast ───────────────────────────────────────────────────────────── */
 
 @keyframes pg-toast-in {
