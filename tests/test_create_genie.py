@@ -18,6 +18,7 @@ import pytest
 from deploy.create_genie import (
     SPACE_TITLE,
     _TABLE_NAMES,
+    _full_space_title,
     build_serialized_space,
     table_identifiers,
 )
@@ -179,3 +180,32 @@ class TestConstants:
 
     def test_space_title_nonempty(self):
         assert SPACE_TITLE.strip()
+
+
+# ---------------------------------------------------------------------------
+# _full_space_title()
+# ---------------------------------------------------------------------------
+
+class TestFullSpaceTitle:
+    def test_contains_base_title(self):
+        result = _full_space_title("lactalis_pet_planner")
+        assert SPACE_TITLE in result
+
+    def test_contains_schema(self):
+        result = _full_space_title("lactalis_pet_planner")
+        assert "lactalis_pet_planner" in result
+
+    def test_schema_scoped_differs_from_base(self):
+        assert _full_space_title("lactalis_pet_planner") != SPACE_TITLE
+
+    def test_different_schemas_produce_different_titles(self):
+        assert _full_space_title("schema_a") != _full_space_title("schema_b")
+
+    def test_old_schema_title_differs_from_new(self):
+        """Ensures the old lactalis_pet space is NOT reused for lactalis_pet_planner."""
+        old = _full_space_title("lactalis_pet")
+        new = _full_space_title("lactalis_pet_planner")
+        assert old != new
+
+    def test_no_em_dash(self):
+        assert "—" not in _full_space_title("lactalis_pet_planner")

@@ -410,6 +410,24 @@ def step_create_or_update_app(w, profile: str) -> None:
         log.info("  App '%s' created.", APP_NAME)
 
 
+def _get_app_dict(w) -> dict:
+    """Fetch the app record via the GA REST path and return it as a plain dict.
+
+    SDK w.apps.get() routes to /api/2.0/preview/apps/{name} in the deployed
+    SDK version (0.30) and raises NotFound.  The GA path /api/2.0/apps/{name}
+    is used instead.
+
+    Relevant response fields:
+        url                          -- app URL
+        service_principal_id         -- numeric SP id
+        service_principal_client_id  -- SP OAuth client UUID (preferred for grants)
+        service_principal_name       -- SP display name / fallback
+        app_status.state             -- app lifecycle state (RUNNING / ERROR / ...)
+        compute_status.state         -- compute state (ACTIVE / STARTING / ...)
+    """
+    return w.api_client.do("GET", f"/api/2.0/apps/{APP_NAME}")
+
+
 def step_sync_and_deploy(w, profile: str) -> str:
     """Step 9: Sync source to workspace and deploy. Returns the app URL."""
     log.info("[9/11] Syncing source code to workspace and deploying...")
@@ -456,10 +474,14 @@ def step_sync_and_deploy(w, profile: str) -> str:
         check=True,
     )
 
-    # Retrieve app URL
-    app_info = w.apps.get(APP_NAME)
-    app_url = getattr(app_info, "url", None) or ""
-    log.info("  App deployed: %s", app_url)
+    # Retrieve app URL via GA REST path (SDK w.apps.get -> /preview/ -> 404)
+    try:
+        app_dict = _get_app_dict(w)
+        app_url = app_dict.get("url") or ""
+    except Exception as exc:
+        log.warning("  Could not retrieve app URL: %s", exc)
+        app_url = ""
+    log.info("  App deployed: %s", app_url or "(check Apps console)")
     return app_url
 
 
@@ -502,27 +524,39 @@ def step_grant_sp(w, warehouse_id: str, genie_space_id: str, profile: str) -> No
 
 
 def _resolve_app_sp(w) -> tuple[str | None, int | None]:
-    """Return (sp_name_for_grants, sp_numeric_id) from the app record."""
+    """Return (sp_principal_for_grants, sp_numeric_id) from the app record.
+
+    Uses the GA REST path via _get_app_dict (SDK w.apps.get -> /preview/ -> 404).
+    Prefers service_principal_client_id (the OAuth UUID) as the principal string
+    for UC grants and the permissions API; falls back to service_principal_name,
+    then to a live SP lookup.
+    """
     try:
-        app_info = w.apps.get(APP_NAME)
+        app_dict = _get_app_dict(w)
     except Exception as exc:
         log.warning("  Could not fetch app record: %s", exc)
         return None, None
 
-    sp_numeric_id = getattr(app_info, "service_principal_id", None)
-    # Try to get the SP's application_id (UUID) for grants
+    sp_numeric_id = app_dict.get("service_principal_id")
+    # service_principal_client_id is the OAuth UUID used in UC grants.
+    # service_principal_name is the display name, also accepted by the grants API.
+    sp_name = (
+        app_dict.get("service_principal_client_id")
+        or app_dict.get("service_principal_name")
+    )
+    if sp_name:
+        return sp_name, sp_numeric_id
+
+    # Last resort: SDK lookup to obtain application_id UUID from numeric id.
     if sp_numeric_id:
         try:
             sp = w.service_principals.get(id=sp_numeric_id)
-            # application_id is the UUID used in UC principals and permissions API
             app_id = getattr(sp, "application_id", None) or getattr(sp, "display_name", None)
             return app_id, sp_numeric_id
         except Exception as exc:
             log.warning("  Could not fetch SP details (id=%s): %s", sp_numeric_id, exc)
 
-    # Fallback: try service_principal_name directly on the app object
-    sp_name = getattr(app_info, "service_principal_name", None)
-    return sp_name, sp_numeric_id
+    return None, sp_numeric_id
 
 
 def _grant_uc_catalog(w, sp_name: str) -> None:
@@ -631,16 +665,11 @@ def _grant_genie_space(w, genie_space_id: str, sp_name: str) -> None:
 
 
 def step_health_check(app_url: str, w=None, timeout_s: int = 60) -> None:
-    """Step 11: Poll app state via the SDK until running/active or timeout.
+    """Step 11: Poll app state via the GA REST path until running/active or timeout.
 
-    The previous approach (unauthenticated urllib GET to /api/health) never
-    succeeded because Databricks Apps require workspace auth.  A raw request
-    gets a login redirect, not ``{"status": "ok"}``.
-
-    This version polls ``w.apps.get(APP_NAME)`` and inspects the
-    ``app_status.state`` field.  The app URL is printed so it can be opened
-    manually without waiting for the poll to complete.  The check is
-    non-fatal: a timeout (or missing SDK client) logs a warning and returns.
+    Uses _get_app_dict (GA /api/2.0/apps/{name}) to read app_status.state and
+    compute_status.state from the plain dict response.  Non-fatal: a timeout or
+    missing SDK client logs a warning and returns so the deploy does not crash.
     """
     log.info("[11/11] Waiting for app '%s' to reach running state (timeout=%ds)...",
              APP_NAME, timeout_s)
@@ -660,18 +689,14 @@ def step_health_check(app_url: str, w=None, timeout_s: int = 60) -> None:
     while time.monotonic() < deadline:
         attempt += 1
         try:
-            app_info = w.apps.get(APP_NAME)
-            app_status = getattr(app_info, "app_status", None)
-            compute_status = getattr(app_info, "compute_status", None)
-
-            app_state = (
-                str(getattr(app_status, "state", "")).upper()
-                if app_status else ""
-            )
-            compute_state = (
-                str(getattr(compute_status, "state", "")).upper()
-                if compute_status else ""
-            )
+            # GA REST path returns a plain dict; nested status dicts accessed with .get()
+            app_dict = _get_app_dict(w)
+            app_state = str(
+                (app_dict.get("app_status") or {}).get("state", "")
+            ).upper()
+            compute_state = str(
+                (app_dict.get("compute_status") or {}).get("state", "")
+            ).upper()
 
             log.info(
                 "  Attempt %d: app_state=%s compute_state=%s",

@@ -53,8 +53,23 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-#: Canonical title used for idempotency look-up.
+#: Base title -- kept as a constant so existing tests remain valid.
+#: Do NOT use SPACE_TITLE directly in ensure_space: use _full_space_title(schema)
+#: which includes the schema name so deploys against different schemas create
+#: separate spaces and do not reuse a space from a prior effort.
 SPACE_TITLE = "Lactalis PET Line Planner"
+
+
+def _full_space_title(schema: str) -> str:
+    """Return the schema-scoped Genie space title used for creation and lookup.
+
+    Including the schema prevents ensure_space from reusing a space from an
+    earlier deployment that may point at different (old) UC tables.
+
+    Example: "Lactalis PET Line Planner [lactalis_pet_planner]"
+    """
+    return f"{SPACE_TITLE} [{schema}]"
+
 
 #: Workspace path that holds the Genie space object.
 #: Created automatically via w.workspace.mkdirs() if it does not exist yet.
@@ -283,8 +298,13 @@ def ensure_space(
     Raises:
         RuntimeError if the API returns a response with no recognisable id.
     """
+    # Use a schema-scoped title so this deploy creates a fresh space for
+    # lactalis_pet_planner and does NOT reuse any space from a prior effort
+    # (e.g. an older space pointing at the deprecated lactalis_pet tables).
+    title = _full_space_title(schema)
+
     # ------------------------------------------------------------------
-    # 1. Check for an existing space with the canonical title.
+    # 1. Check for an existing space with the schema-scoped title.
     # ------------------------------------------------------------------
     resp: dict = client.api_client.do("GET", "/api/2.0/genie/spaces")
     # The list key is "genie_spaces" per the REST API convention; fall back to
@@ -295,11 +315,11 @@ def ensure_space(
         or []
     )
     for sp in spaces:
-        if sp.get("title") == SPACE_TITLE:
+        if sp.get("title") == title:
             space_id: str | None = sp.get("space_id") or sp.get("id")
             if space_id:
                 logger.info(
-                    "Reusing existing Genie space '%s' (id=%s)", SPACE_TITLE, space_id
+                    "Reusing existing Genie space '%s' (id=%s)", title, space_id
                 )
                 return space_id
 
@@ -314,7 +334,7 @@ def ensure_space(
     # ------------------------------------------------------------------
     payload: dict = {
         "warehouse_id": warehouse_id,
-        "title": SPACE_TITLE,
+        "title": title,
         "description": (
             "Natural language supply planning assistant for the Lactalis PET line."
             " Ask questions about stock health, forward cover, production plans,"
@@ -323,7 +343,7 @@ def ensure_space(
         "parent_path": _PARENT_PATH,
         "serialized_space": build_serialized_space(catalog, schema),
     }
-    logger.info("Creating Genie space: %s", SPACE_TITLE)
+    logger.info("Creating Genie space: %s", title)
     created: dict = client.api_client.do("POST", "/api/2.0/genie/spaces", body=payload)
 
     space_id = created.get("space_id") or created.get("id")
@@ -332,5 +352,5 @@ def ensure_space(
             f"Genie space creation returned no id. Response keys: {list(created.keys())}"
         )
 
-    logger.info("Created Genie space '%s' (id=%s)", SPACE_TITLE, space_id)
+    logger.info("Created Genie space '%s' (id=%s)", title, space_id)
     return space_id
