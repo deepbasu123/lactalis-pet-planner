@@ -146,3 +146,125 @@ class TestProduction:
             assert _all_json_native(row), (
                 f"Row {i} contains a non-JSON-native value: {row}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Edit / save / discard overlay endpoints
+# ---------------------------------------------------------------------------
+
+# Dedicated TestClient so the session cookie persists across all edit-test
+# requests without touching the shared _client used by the read-only tests.
+_edit_client = TestClient(app)
+
+# Locked weeks (horizon_index 1-3 -> 2026-W35, 2026-W36, 2026-W37)
+_LOCKED_WEEK = "2026-W35"
+# Non-locked weeks used across the four tests (choose different weeks so
+# edits from one test do not cascade into another test's supply assertions).
+_WEEK_A = "2026-W38"   # used by test_edit_overlay_changes_supply
+_WEEK_B = "2026-W40"   # used by test_discard_clears_overlay
+_WEEK_C = "2026-W41"   # used by test_save_clears_overlay_nolive
+_SKU = "61108"          # OAK UHT CHOCOLATE 500ML -- non-shortage SKU, high volume
+
+
+class TestEditOverlay:
+    """TDD tests for the working-copy overlay endpoints."""
+
+    def test_edit_overlay_changes_supply(self):
+        """Edit a non-locked cell to 0; GET /api/supply should show prod=0 and
+        change the closing stock of a downstream week (QA hold = 2 weeks).
+
+        The engine applies qa_hold_weeks=2: production from W38 (horizon_index=4)
+        is received as `recv` in W40 (horizon_index=6).  The edited week's own
+        `close` is unaffected; the first visible change is two weeks downstream.
+        """
+        # Baseline supply for SKU 61108 indexed by week_key
+        rows_before = {
+            row["week_key"]: row
+            for row in _edit_client.get("/api/supply").json()["rows"]
+            if row["sku_code"] == _SKU
+        }
+        assert rows_before[_WEEK_A]["prod"] != 0.0, (
+            "Pre-condition: baseline planned_qty for W38 should be non-zero"
+        )
+
+        # Edit WEEK_A (2026-W38) to zero
+        r_edit = _edit_client.post("/api/production/edit", json={
+            "sku_code": _SKU, "week_key": _WEEK_A, "qty": 0.0,
+        })
+        assert r_edit.status_code == 200
+
+        # GET /api/supply should reflect the overlay
+        rows_after = {
+            row["week_key"]: row
+            for row in _edit_client.get("/api/supply").json()["rows"]
+            if row["sku_code"] == _SKU
+        }
+
+        # The edited cell shows prod=0 (overlay applied)
+        assert rows_after[_WEEK_A]["prod"] == 0.0
+
+        # Downstream close changes: W38 production (qa_hold=2) lands in W40.
+        # W40 close must differ from baseline because recv is now 0 there.
+        _QA_DOWNSTREAM = "2026-W40"
+        assert rows_after[_QA_DOWNSTREAM]["close"] != rows_before[_QA_DOWNSTREAM]["close"]
+
+    def test_edit_locked_week_returns_409(self):
+        """Editing a locked week must return HTTP 409."""
+        r = _edit_client.post("/api/production/edit", json={
+            "sku_code": _SKU, "week_key": _LOCKED_WEEK, "qty": 999.0,
+        })
+        assert r.status_code == 409
+
+    def test_discard_clears_overlay(self):
+        """After discard, GET /api/supply returns baseline close for the edited cell."""
+        # Get the baseline close for WEEK_B using the clean shared client
+        # (different session, no overlay).
+        baseline_rows = _client.get("/api/supply").json()["rows"]
+        cell_baseline = next(
+            row for row in baseline_rows
+            if row["sku_code"] == _SKU and row["week_key"] == _WEEK_B
+        )
+
+        # Edit WEEK_B to zero on the edit client
+        _edit_client.post("/api/production/edit", json={
+            "sku_code": _SKU, "week_key": _WEEK_B, "qty": 0.0,
+        })
+
+        # Discard the entire session overlay
+        r_discard = _edit_client.post("/api/production/discard")
+        assert r_discard.status_code == 200
+
+        # Supply should now match the clean baseline close for WEEK_B
+        rows_after = _edit_client.get("/api/supply").json()["rows"]
+        cell_after = next(
+            row for row in rows_after
+            if row["sku_code"] == _SKU and row["week_key"] == _WEEK_B
+        )
+        assert cell_after["close"] == cell_baseline["close"]
+
+    def test_save_clears_overlay_nolive(self):
+        """Save (PET_LIVE unset) returns success with saved>=1 and clears the overlay."""
+        # Edit WEEK_C to zero
+        _edit_client.post("/api/production/edit", json={
+            "sku_code": _SKU, "week_key": _WEEK_C, "qty": 0.0,
+        })
+
+        # Save
+        r_save = _edit_client.post("/api/production/save")
+        assert r_save.status_code == 200
+        data = r_save.json()
+        assert data["saved"] >= 1
+
+        # After save the overlay is cleared -- supply should match the clean baseline
+        baseline_rows = _client.get("/api/supply").json()["rows"]
+        rows_after = _edit_client.get("/api/supply").json()["rows"]
+
+        cell_baseline = next(
+            row for row in baseline_rows
+            if row["sku_code"] == _SKU and row["week_key"] == _WEEK_C
+        )
+        cell_after = next(
+            row for row in rows_after
+            if row["sku_code"] == _SKU and row["week_key"] == _WEEK_C
+        )
+        assert cell_after["close"] == cell_baseline["close"]

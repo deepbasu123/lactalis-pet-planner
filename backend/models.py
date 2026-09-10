@@ -44,3 +44,40 @@ class SummaryOrigVsPlan(BaseModel):
 class SummaryResponse(BaseModel):
     counts: dict[str, int]
     original_vs_plan: SummaryOrigVsPlan
+
+
+# ---------------------------------------------------------------------------
+# Edit / save / discard overlay request and response models
+# ---------------------------------------------------------------------------
+
+class EditRequest(BaseModel):
+    sku_code: str
+    week_key: str
+    qty: float
+
+
+class EditResponse(BaseModel):
+    status: str
+    sku_code: str
+    week_key: str
+    qty: float
+
+
+class ResetWeekRequest(BaseModel):
+    week_key: str
+
+
+class SaveResponse(BaseModel):
+    status: str
+    saved: int  # rows written (or that would have been written in no-live mode)
+
+
+class DiscardResponse(BaseModel):
+    status: str
+    cleared: int  # number of overlay entries removed
+
+
+class RecalcResponse(BaseModel):
+    supply: SupplyResponse
+    production: ProductionResponse
+    summary: SummaryResponse

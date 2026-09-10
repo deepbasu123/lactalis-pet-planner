@@ -30,15 +30,22 @@ import datetime
 import logging
 import math
 import os
+import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.models import (
     ConfigMeta,
     ConfigResponse,
+    DiscardResponse,
+    EditRequest,
+    EditResponse,
     ProductionResponse,
+    RecalcResponse,
+    ResetWeekRequest,
+    SaveResponse,
     SummaryOrigVsPlan,
     SummaryResponse,
     SupplyResponse,
@@ -87,6 +94,33 @@ def refresh_dataset() -> None:
     """Invalidate the cache so the next call to get_dataset() reloads."""
     global _dataset
     _dataset = None
+
+
+# ---------------------------------------------------------------------------
+# Per-session working-copy overlay
+#
+# In-process store (demo only -- resets on server restart).
+# Keys: session_id str -> dict[(sku_code, week_key) -> planned_qty float]
+# ---------------------------------------------------------------------------
+
+_SESSION_OVERLAYS: dict[str, dict] = {}
+_SESSION_COOKIE = "pet_session"
+
+
+def _get_or_create_sid(request: Request, response: Response) -> str:
+    """Return the session ID from the cookie, creating a fresh one if absent."""
+    sid: str | None = request.cookies.get(_SESSION_COOKIE)
+    if not sid:
+        sid = str(uuid.uuid4())
+        response.set_cookie(_SESSION_COOKIE, sid, httponly=True, samesite="lax")
+    return sid
+
+
+def _session_overlay(sid: str) -> dict:
+    """Return (or create) the overlay dict for the given session."""
+    if sid not in _SESSION_OVERLAYS:
+        _SESSION_OVERLAYS[sid] = {}
+    return _SESSION_OVERLAYS[sid]
 
 
 # ---------------------------------------------------------------------------
@@ -171,12 +205,14 @@ def api_config() -> ConfigResponse:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/supply", response_model=SupplyResponse)
-def api_supply() -> SupplyResponse:
+def api_supply(request: Request, response: Response) -> SupplyResponse:
     """Return the full supply projection grid with traffic-light colours."""
     from backend import service
 
+    sid = _get_or_create_sid(request, response)
+    overlay = _session_overlay(sid)
     ds = get_dataset()
-    supply_df = service.build_supply(ds)
+    supply_df = service.build_supply(ds, plan_overlay=overlay)
     rows = _sanitize_records(supply_df)
     return SupplyResponse(rows=rows)
 
@@ -186,12 +222,14 @@ def api_supply() -> SupplyResponse:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/production", response_model=ProductionResponse)
-def api_production() -> ProductionResponse:
+def api_production(request: Request, response: Response) -> ProductionResponse:
     """Return the production grid with weekly totals and capacity flags."""
     from backend import service
 
+    sid = _get_or_create_sid(request, response)
+    overlay = _session_overlay(sid)
     ds = get_dataset()
-    prod = service.build_production(ds)
+    prod = service.build_production(ds, plan_overlay=overlay)
 
     # week_totals values come from `total += float(qty)` -- plain Python floats
     # but sanitize defensively.  Coerce to float first so _safe_val can catch
@@ -226,13 +264,15 @@ def api_production() -> ProductionResponse:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/summary", response_model=SummaryResponse)
-def api_summary() -> SummaryResponse:
+def api_summary(request: Request, response: Response) -> SummaryResponse:
     """Return colour counts and original-vs-working-plan comparison."""
     from backend import service
 
+    sid = _get_or_create_sid(request, response)
+    overlay = _session_overlay(sid)
     ds = get_dataset()
-    supply_df = service.build_supply(ds)
-    summ = service.summary(supply_df, ds)
+    supply_df = service.build_supply(ds, plan_overlay=overlay)
+    summ = service.summary(supply_df, ds, plan_overlay=overlay)
 
     # value_counts() returns numpy int64 -- convert to int
     counts: dict[str, int] = {k: int(v) for k, v in summ["counts"].items()}
@@ -246,6 +286,153 @@ def api_summary() -> SummaryResponse:
     return SummaryResponse(
         counts=counts,
         original_vs_plan=SummaryOrigVsPlan(original=original, working=working),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/production/edit
+# ---------------------------------------------------------------------------
+
+@app.post("/api/production/edit", response_model=EditResponse)
+def api_production_edit(
+    body: EditRequest,
+    request: Request,
+    response: Response,
+) -> EditResponse:
+    """Apply one cell edit to the session overlay.
+
+    Returns HTTP 409 if the target week is locked (RULE-020).
+    Negative qty is clamped to 0; capacity/pack-size violations are detected
+    by the engine (flagged via week_flags) but are NOT rejected here.
+    """
+    ds = get_dataset()
+    week_df = ds["week"]
+
+    row = week_df[week_df["week_key"] == body.week_key]
+    if row.empty:
+        raise HTTPException(status_code=404, detail=f"Week {body.week_key!r} not found")
+
+    if bool(row["is_locked"].iat[0]):
+        raise HTTPException(
+            status_code=409,
+            detail="Week is locked (time fence) and cannot be modified",
+        )
+
+    qty = max(0.0, float(body.qty))
+    sid = _get_or_create_sid(request, response)
+    overlay = _session_overlay(sid)
+    overlay[(body.sku_code, body.week_key)] = qty
+
+    return EditResponse(status="ok", sku_code=body.sku_code, week_key=body.week_key, qty=qty)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/production/save
+# ---------------------------------------------------------------------------
+
+@app.post("/api/production/save", response_model=SaveResponse)
+def api_production_save(request: Request, response: Response) -> SaveResponse:
+    """Persist the session overlay.
+
+    When PET_LIVE=="1": writes changed rows via db.merge_plan_lines() and then
+    calls db.write_snapshot() with the freshly computed supply projection.
+    When PET_LIVE is unset (demo / test mode): a no-op that just clears the
+    overlay and reports how many rows *would* have been saved.
+    """
+    sid = _get_or_create_sid(request, response)
+    overlay = _session_overlay(sid)
+    n_rows = len(overlay)
+
+    if os.environ.get("PET_LIVE") == "1":
+        from backend import db, service
+        ds = get_dataset()
+        db.merge_plan_lines(overlay)
+        supply_df = service.build_supply(ds, plan_overlay=overlay)
+        db.write_snapshot(supply_df)
+        refresh_dataset()
+
+    # Always clear the overlay after a save attempt
+    _SESSION_OVERLAYS.pop(sid, None)
+
+    return SaveResponse(status="ok", saved=n_rows)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/production/discard
+# ---------------------------------------------------------------------------
+
+@app.post("/api/production/discard", response_model=DiscardResponse)
+def api_production_discard(request: Request, response: Response) -> DiscardResponse:
+    """Clear all pending edits for this session."""
+    sid = _get_or_create_sid(request, response)
+    overlay = _session_overlay(sid)
+    cleared = len(overlay)
+    _SESSION_OVERLAYS.pop(sid, None)
+    return DiscardResponse(status="ok", cleared=cleared)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/production/reset-week
+# ---------------------------------------------------------------------------
+
+@app.post("/api/production/reset-week", response_model=DiscardResponse)
+def api_production_reset_week(
+    body: ResetWeekRequest,
+    request: Request,
+    response: Response,
+) -> DiscardResponse:
+    """Clear all overlay entries for one specific week."""
+    sid = _get_or_create_sid(request, response)
+    overlay = _session_overlay(sid)
+    keys_to_remove = [k for k in overlay if k[1] == body.week_key]
+    for k in keys_to_remove:
+        del overlay[k]
+    return DiscardResponse(status="ok", cleared=len(keys_to_remove))
+
+
+# ---------------------------------------------------------------------------
+# POST /api/recalc
+# ---------------------------------------------------------------------------
+
+@app.post("/api/recalc", response_model=RecalcResponse)
+def api_recalc(request: Request, response: Response) -> RecalcResponse:
+    """Recompute supply, production, and summary for the current session overlay."""
+    from backend import service
+
+    sid = _get_or_create_sid(request, response)
+    overlay = _session_overlay(sid)
+    ds = get_dataset()
+
+    supply_df = service.build_supply(ds, plan_overlay=overlay)
+    supply_rows = _sanitize_records(supply_df)
+
+    prod = service.build_production(ds, plan_overlay=overlay)
+    week_totals: dict[str, float] = {
+        k: _safe_val(float(v)) for k, v in prod["week_totals"].items()
+    }
+    week_flags: dict[str, dict] = {
+        wk: _sanitize_flat_dict(flags) for wk, flags in prod["week_flags"].items()
+    }
+    prod_rows = [_sanitize_flat_dict(row) for row in prod["rows"]]
+
+    summ = service.summary(supply_df, ds, plan_overlay=overlay)
+    counts: dict[str, int] = {k: int(v) for k, v in summ["counts"].items()}
+    ovp = summ["original_vs_plan"]
+    original: dict[str, int] = {k: int(v) for k, v in ovp["original"].items()}
+    working: dict[str, int] = {k: int(v) for k, v in ovp["working"].items()}
+
+    return RecalcResponse(
+        supply=SupplyResponse(rows=supply_rows),
+        production=ProductionResponse(
+            rows=prod_rows,
+            week_totals=week_totals,
+            week_flags=week_flags,
+            changeovers=int(prod["changeovers"]),
+        ),
+        summary=SummaryResponse(
+            counts=counts,
+            original_vs_plan=SummaryOrigVsPlan(original=original, working=working),
+        ),
     )
 
 
