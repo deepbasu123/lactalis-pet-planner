@@ -90,3 +90,29 @@ class RecalcResponse(BaseModel):
 class GenieAskRequest(BaseModel):
     question: str
     conversation_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/parameters, PUT /api/weeks, PUT /api/skus
+# ---------------------------------------------------------------------------
+
+class PutParameterRequest(BaseModel):
+    name: str
+    value: float
+
+
+class PutWeekRequest(BaseModel):
+    week_key: str
+    maintenance_type: str | None = None
+    is_locked: bool | None = None
+    note: str | None = None
+
+
+class PutSKURequest(BaseModel):
+    sku_code: str
+    priority: int | None = None
+    status: str | None = None
+
+
+class PutResponse(BaseModel):
+    status: str  # "ok"

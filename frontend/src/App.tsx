@@ -4,6 +4,10 @@ import './theme.css';
 import Header from './components/Header';
 import SupplyGrid from './components/SupplyGrid';
 import ProductionGrid from './components/ProductionGrid';
+import Parameters from './components/Parameters';
+import SkuPriority from './components/SkuPriority';
+import WeekConfig from './components/WeekConfig';
+import TrafficLightSummary from './components/TrafficLightSummary';
 import { fetchConfig } from './api';
 import type { ConfigResponse } from './api';
 
@@ -262,6 +266,23 @@ export default function App() {
               onTotalUpdate={handleTotalUpdate}
             />
           </>
+        ) : activeTab === 'parameters' ? (
+          <Parameters
+            parameters={config?.parameters ?? []}
+            onDataChange={bumpDataVersion}
+          />
+        ) : activeTab === 'sku-priority' ? (
+          <SkuPriority
+            skus={config?.skus ?? []}
+            onDataChange={bumpDataVersion}
+          />
+        ) : activeTab === 'week-config' ? (
+          <WeekConfig
+            weeks={config?.weeks ?? []}
+            onDataChange={bumpDataVersion}
+          />
+        ) : activeTab === 'summary' ? (
+          <TrafficLightSummary dataVersion={dataVersion} />
         ) : (
           <PlaceholderPanel
             title={activeTabDef.label}

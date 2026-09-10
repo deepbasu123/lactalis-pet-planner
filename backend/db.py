@@ -192,6 +192,59 @@ def merge_plan_lines(rows: list[dict]) -> int:
     return len(rows)
 
 
+def update_parameter(name: str, value: float) -> None:
+    """UPDATE parameter SET value=<value> WHERE name=<name>."""
+    table = _fqn("parameter")
+    safe_name = _quote_str(name)
+    safe_value = _fmt_num(value)
+    _run_sql(f"UPDATE {table} SET value = {safe_value} WHERE name = {safe_name}")
+
+
+def update_week(week_key: str, fields: dict) -> None:
+    """UPDATE week SET <fields> WHERE week_key=<week_key>.
+
+    Only maintenance_type, is_locked, and note are writable.
+    """
+    if not fields:
+        return
+    table = _fqn("week")
+    safe_key = _quote_str(week_key)
+    set_parts: list[str] = []
+    for k, v in fields.items():
+        if k == "maintenance_type":
+            set_parts.append(f"maintenance_type = {_quote_str(str(v))}")
+        elif k == "is_locked":
+            val = "true" if v else "false"
+            set_parts.append(f"is_locked = {val}")
+        elif k == "note":
+            set_parts.append(f"note = {_quote_str(str(v))}")
+    if set_parts:
+        _run_sql(
+            f"UPDATE {table} SET {', '.join(set_parts)} WHERE week_key = {safe_key}"
+        )
+
+
+def update_sku(sku_code: str, fields: dict) -> None:
+    """UPDATE sku SET <fields> WHERE sku_code=<sku_code>.
+
+    Only priority and status are writable.
+    """
+    if not fields:
+        return
+    table = _fqn("sku")
+    safe_code = _quote_str(sku_code)
+    set_parts: list[str] = []
+    for k, v in fields.items():
+        if k == "priority":
+            set_parts.append(f"priority = {repr(int(v))}")
+        elif k == "status":
+            set_parts.append(f"status = {_quote_str(str(v))}")
+    if set_parts:
+        _run_sql(
+            f"UPDATE {table} SET {', '.join(set_parts)} WHERE sku_code = {safe_code}"
+        )
+
+
 def write_snapshot(df: pd.DataFrame) -> None:
     """
     Overwrite projection_snapshot with the contents of df.

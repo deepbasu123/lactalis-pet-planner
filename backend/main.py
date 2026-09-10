@@ -44,6 +44,10 @@ from backend.models import (
     EditResponse,
     GenieAskRequest,
     ProductionResponse,
+    PutParameterRequest,
+    PutResponse,
+    PutSKURequest,
+    PutWeekRequest,
     RecalcResponse,
     ResetWeekRequest,
     SaveResponse,
@@ -492,6 +496,106 @@ def api_genie_poll(conversation_id: str, message_id: str) -> dict:
             status_code=502,
             detail="Genie could not answer right now.",
         )
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/parameters
+# ---------------------------------------------------------------------------
+
+@app.put("/api/parameters", response_model=PutResponse)
+def api_put_parameters(body: PutParameterRequest) -> PutResponse:
+    """Update a single parameter by name.
+
+    When PET_LIVE=="1": persists via db.update_parameter() and invalidates the
+    dataset cache so the next request reloads from UC.
+    When PET_LIVE is unset: mutates the cached in-memory DataFrame directly so
+    the change is visible on the next GET /api/config without any reload.
+    Returns HTTP 404 if the parameter name is not found.
+    """
+    ds = get_dataset()
+    param_df = ds["parameter"]
+    mask = param_df["name"] == body.name
+    if not mask.any():
+        raise HTTPException(status_code=404, detail=f"Parameter {body.name!r} not found")
+
+    if os.environ.get("PET_LIVE") == "1":
+        from backend import db
+        db.update_parameter(body.name, body.value)
+        refresh_dataset()
+    else:
+        ds["parameter"].loc[mask, "value"] = float(body.value)
+
+    return PutResponse(status="ok")
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/weeks
+# ---------------------------------------------------------------------------
+
+@app.put("/api/weeks", response_model=PutResponse)
+def api_put_weeks(body: PutWeekRequest) -> PutResponse:
+    """Update editable fields (maintenance_type, is_locked, note) for one week.
+
+    Only the fields explicitly provided (non-None) are updated.
+    Returns HTTP 404 if the week_key is not found.
+    """
+    ds = get_dataset()
+    week_df = ds["week"]
+    mask = week_df["week_key"] == body.week_key
+    if not mask.any():
+        raise HTTPException(status_code=404, detail=f"Week {body.week_key!r} not found")
+
+    fields: dict = {}
+    if body.maintenance_type is not None:
+        fields["maintenance_type"] = body.maintenance_type
+    if body.is_locked is not None:
+        fields["is_locked"] = body.is_locked
+    if body.note is not None:
+        fields["note"] = body.note
+
+    if os.environ.get("PET_LIVE") == "1":
+        from backend import db
+        db.update_week(body.week_key, fields)
+        refresh_dataset()
+    else:
+        for col, val in fields.items():
+            ds["week"].loc[mask, col] = val
+
+    return PutResponse(status="ok")
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/skus
+# ---------------------------------------------------------------------------
+
+@app.put("/api/skus", response_model=PutResponse)
+def api_put_skus(body: PutSKURequest) -> PutResponse:
+    """Update editable fields (priority, status) for one SKU.
+
+    Only the fields explicitly provided (non-None) are updated.
+    Returns HTTP 404 if the sku_code is not found.
+    """
+    ds = get_dataset()
+    sku_df = ds["sku"]
+    mask = sku_df["sku_code"] == body.sku_code
+    if not mask.any():
+        raise HTTPException(status_code=404, detail=f"SKU {body.sku_code!r} not found")
+
+    fields: dict = {}
+    if body.priority is not None:
+        fields["priority"] = body.priority
+    if body.status is not None:
+        fields["status"] = body.status
+
+    if os.environ.get("PET_LIVE") == "1":
+        from backend import db
+        db.update_sku(body.sku_code, fields)
+        refresh_dataset()
+    else:
+        for col, val in fields.items():
+            ds["sku"].loc[mask, col] = val
+
+    return PutResponse(status="ok")
 
 
 # ---------------------------------------------------------------------------

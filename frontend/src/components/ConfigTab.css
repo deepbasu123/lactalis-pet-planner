@@ -1,0 +1,330 @@
+/*
+ * Shared styles for the four editable config tabs:
+ * Parameters, SKU Priority, Week Config, Traffic Light Summary.
+ *
+ * Lactalis palette: blue #004B85, sky #5BC5F2, white backgrounds.
+ * Sharp corners throughout (--radius / --radius-sm).
+ */
+
+/* ── Card wrapper ──────────────────────────────────────────────────── */
+
+.ct-card {
+  background: var(--bg);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+/* ── Card header ─────────────────────────────────────────────────── */
+
+.ct-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg);
+}
+
+.ct-card-title {
+  font-size: var(--text-lg);
+  font-weight: 700;
+  color: var(--lac-blue);
+  letter-spacing: -0.01em;
+}
+
+.ct-card-subtitle {
+  margin-top: 2px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* ── Rule caption ──────────────────────────────────────────────────── */
+
+.ct-rule-caption {
+  padding: var(--sp-3) var(--sp-5);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-light);
+  background: var(--surface-1);
+  line-height: 1.6;
+}
+
+.ct-rule-caption strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* ── Table scroll wrapper ──────────────────────────────────────────── */
+
+.ct-table-wrap {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 520px;
+}
+
+/* ── Table base ────────────────────────────────────────────────────── */
+
+.ct-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-base);
+  table-layout: auto;
+}
+
+.ct-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--surface-1);
+  border-bottom: 2px solid var(--border);
+  padding: var(--sp-2) var(--sp-4);
+  text-align: left;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.ct-table td {
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-primary);
+  vertical-align: middle;
+  height: 44px;
+}
+
+.ct-table tbody tr {
+  transition: background-color var(--ease-fast);
+}
+
+.ct-table tbody tr:hover {
+  background: var(--hover-bg);
+}
+
+.ct-table tbody tr:nth-child(even) {
+  background: var(--surface-1);
+}
+
+.ct-table tbody tr:nth-child(even):hover {
+  background: var(--hover-bg);
+}
+
+/* ── Numeric data cell ─────────────────────────────────────────────── */
+
+.ct-num {
+  font-feature-settings: "tnum" 1;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: var(--text-num);
+  letter-spacing: -0.01em;
+}
+
+/* ── Editable cell ─────────────────────────────────────────────────── */
+
+.ct-cell-editable {
+  cursor: text;
+  position: relative;
+}
+
+.ct-cell-editable:not(.ct-cell-editing):hover {
+  background: #f0f6fe !important;
+}
+
+.ct-cell-editable:not(.ct-cell-editing)::after {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-left: 6px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10' fill='none'%3E%3Cpath d='M7.07 1.07a1.5 1.5 0 0 1 2.12 2.12L3.5 8.88l-2.5.5.5-2.5 5.57-5.81z' stroke='%235BC5F2' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  opacity: 0;
+  transition: opacity var(--ease-fast);
+  vertical-align: middle;
+}
+
+.ct-cell-editable:not(.ct-cell-editing):hover::after {
+  opacity: 1;
+}
+
+/* ── Inline input ──────────────────────────────────────────────────── */
+
+.ct-input {
+  width: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  font-family: var(--font-sans);
+  font-size: var(--text-num);
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg);
+  border: 2px solid var(--lac-sky);
+  border-radius: var(--radius-sm);
+  outline: none;
+  font-feature-settings: "tnum" 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  box-shadow: 0 0 0 3px rgba(91, 197, 242, 0.18);
+  transition: border-color var(--ease-fast), box-shadow var(--ease-fast);
+}
+
+.ct-input:focus {
+  border-color: var(--lac-blue);
+  box-shadow: 0 0 0 3px rgba(0, 75, 133, 0.12);
+}
+
+.ct-input-text {
+  font-weight: 400;
+  font-feature-settings: normal;
+  font-variant-numeric: normal;
+  letter-spacing: normal;
+  font-size: var(--text-base);
+  min-width: 160px;
+}
+
+.ct-select {
+  padding: var(--sp-1) var(--sp-2);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  background: var(--bg);
+  border: 2px solid var(--lac-sky);
+  border-radius: var(--radius-sm);
+  outline: none;
+  cursor: pointer;
+  box-shadow: 0 0 0 3px rgba(91, 197, 242, 0.18);
+  transition: border-color var(--ease-fast), box-shadow var(--ease-fast);
+  -webkit-appearance: auto;
+}
+
+.ct-select:focus {
+  border-color: var(--lac-blue);
+  box-shadow: 0 0 0 3px rgba(0, 75, 133, 0.12);
+}
+
+/* ── Checkbox (is_locked) ──────────────────────────────────────────── */
+
+.ct-checkbox-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.ct-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--lac-blue);
+}
+
+/* ── Status badge ──────────────────────────────────────────────────── */
+
+.ct-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border-radius: var(--radius-sm);
+}
+
+.ct-badge--active {
+  background: #e6f5ec;
+  color: #1a6636;
+}
+
+.ct-badge--inactive {
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+/* ── Maintenance type chips ────────────────────────────────────────── */
+
+.ct-maint {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: var(--radius-sm);
+}
+
+.ct-maint--none     { background: #e8f5e9; color: #2E7D32; }
+.ct-maint--partial  { background: #fff3e0; color: #E65100; }
+.ct-maint--full     { background: #fce4ec; color: #B71C1C; }
+
+/* ── Lock badge ────────────────────────────────────────────────────── */
+
+.ct-lock-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.ct-lock-badge--locked   { background: #fff8e1; color: #b07d00; }
+.ct-lock-badge--unlocked { background: #f1f5f9; color: #718096; }
+
+/* ── Pack size chip ────────────────────────────────────────────────── */
+
+.ct-pack {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  font-feature-settings: "tnum" 1;
+}
+
+/* ── Loading / empty / error states ───────────────────────────────── */
+
+.ct-state-cell {
+  padding: var(--sp-10) var(--sp-6);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--text-base);
+}
+
+.ct-inline-error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  background: #fff5f5;
+  border-top: 1px solid #fed7d7;
+  font-size: var(--text-sm);
+  color: #c53030;
+}
+
+/* ── Save spinner (cell-level) ─────────────────────────────────────── */
+
+@keyframes ct-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ct-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--surface-3);
+  border-top-color: var(--lac-blue);
+  border-radius: 50%;
+  animation: ct-spin 0.7s linear infinite;
+  vertical-align: middle;
+}
+
+/* ── Section separator ─────────────────────────────────────────────── */
+
+.ct-section-gap {
+  margin-top: var(--sp-6);
+}

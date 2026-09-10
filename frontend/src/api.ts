@@ -159,22 +159,32 @@ export interface ResetWeekRequest {
 
 // ── PUT /api/parameters ───────────────────────────────────────────────────────
 
-export interface ParameterUpdates {
-  updates: Record<string, number>;
+export interface PutParameterRequest {
+  name: string;
+  value: number;
 }
 
 // ── PUT /api/weeks ────────────────────────────────────────────────────────────
 
-export interface WeekUpdate {
+export interface PutWeekRequest {
   week_key: string;
-  updates: Partial<Week>;
+  maintenance_type?: string;
+  is_locked?: boolean;
+  note?: string;
 }
 
 // ── PUT /api/skus ─────────────────────────────────────────────────────────────
 
-export interface SKUUpdate {
+export interface PutSKURequest {
   sku_code: string;
-  updates: Partial<SKU>;
+  priority?: number;
+  status?: string;
+}
+
+// ── PUT response (all three PUT endpoints return {status: "ok"}) ──────────────
+
+export interface PutResponse {
+  status: string;  // "ok"
 }
 
 // ── POST /api/genie/ask ───────────────────────────────────────────────────────
@@ -251,14 +261,14 @@ export const discardProduction = (): Promise<DiscardResponse> =>
 export const resetWeek = (req: ResetWeekRequest): Promise<DiscardResponse> =>
   jsonPost<DiscardResponse>('/api/production/reset-week', req);
 
-export const updateParameters = (req: ParameterUpdates): Promise<DiscardResponse> =>
-  jsonPut<DiscardResponse>('/api/parameters', req);
+export const updateParameter = (req: PutParameterRequest): Promise<PutResponse> =>
+  jsonPut<PutResponse>('/api/parameters', req);
 
-export const updateWeek = (req: WeekUpdate): Promise<DiscardResponse> =>
-  jsonPut<DiscardResponse>('/api/weeks', req);
+export const updateWeek = (req: PutWeekRequest): Promise<PutResponse> =>
+  jsonPut<PutResponse>('/api/weeks', req);
 
-export const updateSKU = (req: SKUUpdate): Promise<DiscardResponse> =>
-  jsonPut<DiscardResponse>('/api/skus', req);
+export const updateSKU = (req: PutSKURequest): Promise<PutResponse> =>
+  jsonPut<PutResponse>('/api/skus', req);
 
 export const genieAsk = (req: GenieAskRequest): Promise<GenieAskResponse> =>
   jsonPost<GenieAskResponse>('/api/genie/ask', req);

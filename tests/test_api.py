@@ -268,3 +268,73 @@ class TestEditOverlay:
             if row["sku_code"] == _SKU and row["week_key"] == _WEEK_C
         )
         assert cell_after["close"] == cell_baseline["close"]
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/parameters, PUT /api/weeks, PUT /api/skus
+# ---------------------------------------------------------------------------
+
+# Use a dedicated client so session overlays from the edit tests are isolated.
+_put_client = TestClient(app)
+
+
+class TestPutEndpoints:
+    """TDD tests for config PUT endpoints (PET_LIVE unset: in-memory mutation)."""
+
+    def teardown_method(self, method):
+        """Reset the module-level dataset cache after each test so mutations
+        from one test do not bleed into subsequent tests or into the read-only
+        TestConfig / TestSummary test expectations."""
+        from backend.main import refresh_dataset
+        refresh_dataset()
+
+    def test_put_parameter_updates_value(self):
+        """PUT /api/parameters -> GET /api/config shows the new value."""
+        name = "cap_400ml_1_2_sku"
+        new_value = 999999.0
+
+        r = _put_client.put("/api/parameters", json={"name": name, "value": new_value})
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+
+        config = _put_client.get("/api/config").json()
+        param = next(p for p in config["parameters"] if p["name"] == name)
+        assert param["value"] == new_value
+
+    def test_put_parameter_unknown_name_returns_404(self):
+        """PUT /api/parameters with an unknown parameter name returns HTTP 404."""
+        r = _put_client.put("/api/parameters", json={"name": "nonexistent_param", "value": 1.0})
+        assert r.status_code == 404
+
+    def test_put_week_is_locked_reflected_in_config(self):
+        """PUT /api/weeks is_locked change -> GET /api/config shows updated value."""
+        # Week 2026-W38 is not locked by default (horizon_index=4, outside time fence)
+        week_key = "2026-W38"
+        r = _put_client.put("/api/weeks", json={"week_key": week_key, "is_locked": True})
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+
+        config = _put_client.get("/api/config").json()
+        week = next(w for w in config["weeks"] if w["week_key"] == week_key)
+        assert week["is_locked"] is True
+
+    def test_put_week_unknown_key_returns_404(self):
+        """PUT /api/weeks with an unknown week_key returns HTTP 404."""
+        r = _put_client.put("/api/weeks", json={"week_key": "9999-W99"})
+        assert r.status_code == 404
+
+    def test_put_sku_priority_reflected_in_config(self):
+        """PUT /api/skus priority change -> GET /api/config shows updated value."""
+        sku_code = "61108"
+        r = _put_client.put("/api/skus", json={"sku_code": sku_code, "priority": 99})
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+
+        config = _put_client.get("/api/config").json()
+        sku = next(s for s in config["skus"] if s["sku_code"] == sku_code)
+        assert sku["priority"] == 99
+
+    def test_put_sku_unknown_code_returns_404(self):
+        """PUT /api/skus with an unknown sku_code returns HTTP 404."""
+        r = _put_client.put("/api/skus", json={"sku_code": "NOSUCHSKU"})
+        assert r.status_code == 404
