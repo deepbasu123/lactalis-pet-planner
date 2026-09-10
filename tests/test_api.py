@@ -23,10 +23,25 @@ CANONICAL_COLOURS = {
 
 _client = TestClient(app)
 
+_JSON_NATIVE = (int, float, str, bool, type(None))
+
 
 def _no_nan(text: str) -> bool:
     """Return True only if the raw response text contains no NaN literal."""
     return "NaN" not in text
+
+
+def _all_json_native(obj) -> bool:
+    """Recursively verify every leaf value is a JSON-native Python type.
+
+    Catches non-NaN numpy scalars (e.g. numpy.int64) that _no_nan() misses
+    because they serialise to a valid number string rather than 'NaN'.
+    """
+    if isinstance(obj, dict):
+        return all(_all_json_native(v) for v in obj.values())
+    if isinstance(obj, list):
+        return all(_all_json_native(item) for item in obj)
+    return isinstance(obj, _JSON_NATIVE)
 
 
 # ---------------------------------------------------------------------------
@@ -122,3 +137,12 @@ class TestProduction:
     def test_no_nan(self):
         r = _client.get("/api/production")
         assert _no_nan(r.text)
+
+    def test_rows_contain_only_json_native_types(self):
+        """Catch non-NaN numpy scalars that _no_nan misses (e.g. numpy.int64)."""
+        r = _client.get("/api/production")
+        data = r.json()
+        for i, row in enumerate(data["rows"]):
+            assert _all_json_native(row), (
+                f"Row {i} contains a non-JSON-native value: {row}"
+            )

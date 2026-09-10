@@ -152,7 +152,7 @@ def api_config() -> ConfigResponse:
     weeks = _sanitize_records(ds["week"])
     parameters = _sanitize_records(ds["parameter"])
 
-    total_production = float(ds["plan_line"]["planned_qty"].sum())
+    total_production = _safe_val(float(ds["plan_line"]["planned_qty"].sum()))
 
     return ConfigResponse(
         skus=skus,
@@ -194,9 +194,10 @@ def api_production() -> ProductionResponse:
     prod = service.build_production(ds)
 
     # week_totals values come from `total += float(qty)` -- plain Python floats
-    # but sanitize defensively
+    # but sanitize defensively.  Coerce to float first so _safe_val can catch
+    # NaN; inverting to float(_safe_val(v)) would raise TypeError when v is NaN.
     week_totals: dict[str, float] = {
-        k: float(_safe_val(v))
+        k: _safe_val(float(v))
         for k, v in prod["week_totals"].items()
     }
 
@@ -206,8 +207,14 @@ def api_production() -> ProductionResponse:
         for wk, flags in prod["week_flags"].items()
     }
 
+    # Sanitize rows the same way as every other output: _safe_val on every cell.
+    # prod["rows"] is built from plan_df iteration and float() coercions, so
+    # values are typically plain Python, but defensive sanitization avoids
+    # any numpy scalar leaking through if the service layer changes.
+    rows = [_sanitize_flat_dict(row) for row in prod["rows"]]
+
     return ProductionResponse(
-        rows=prod["rows"],
+        rows=rows,
         week_totals=week_totals,
         week_flags=week_flags,
         changeovers=int(prod["changeovers"]),
