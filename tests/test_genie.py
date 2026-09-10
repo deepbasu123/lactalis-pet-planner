@@ -137,13 +137,63 @@ class TestGeniePollUnit:
 
         mock_msg.attachments = [text_att, query_att]
         mock_ws.genie.get_message.return_value = mock_msg
+        # Stub get_message_query_result so it does not raise (rows optional here)
+        mock_ws.genie.get_message_query_result.side_effect = Exception("no rows in test")
         monkeypatch.setattr(genie_module, "_ws_client", mock_ws)
 
         result = genie_module.poll("space-xyz", "conv-abc", "msg-111")
 
         assert result["status"] == "COMPLETED"
         assert result["text"] == "Here is the breakdown:"
-        assert "SELECT" in result["sql"]
+        # Assert exact SQL string, not just substring presence
+        assert result["sql"] == "SELECT sku_code, SUM(planned_qty) FROM plan_line GROUP BY 1"
+
+    def test_completed_message_with_rows(self, monkeypatch):
+        """poll() returns rows dict when get_message_query_result has data."""
+        from databricks.sdk.service.dashboards import MessageStatus
+        import backend.genie as genie_module
+
+        mock_ws = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.status = MessageStatus.COMPLETED
+
+        text_att = MagicMock()
+        text_att.text.content = "Production by SKU:"
+        text_att.query = None
+
+        query_att = MagicMock()
+        query_att.text = None
+        query_att.query.query = "SELECT sku_code, SUM(planned_qty) FROM plan_line GROUP BY 1"
+
+        mock_msg.attachments = [text_att, query_att]
+        mock_ws.genie.get_message.return_value = mock_msg
+
+        # Build a mock GenieGetMessageQueryResultResponse with column + row data
+        col1 = MagicMock()
+        col1.name = "sku_code"
+        col2 = MagicMock()
+        col2.name = "planned_qty"
+        mock_qr = MagicMock()
+        mock_qr.statement_response.manifest.schema.columns = [col1, col2]
+        mock_qr.statement_response.result.data_array = [
+            ["61108", "15000"],
+            ["61109", "12000"],
+        ]
+        mock_ws.genie.get_message_query_result.return_value = mock_qr
+        monkeypatch.setattr(genie_module, "_ws_client", mock_ws)
+
+        result = genie_module.poll("space-xyz", "conv-abc", "msg-111")
+
+        assert result["status"] == "COMPLETED"
+        assert "rows" in result
+        assert result["rows"]["columns"] == ["sku_code", "planned_qty"]
+        assert len(result["rows"]["data"]) == 2
+        assert result["rows"]["data"][0] == ["61108", "15000"]
+        mock_ws.genie.get_message_query_result.assert_called_once_with(
+            space_id="space-xyz",
+            conversation_id="conv-abc",
+            message_id="msg-111",
+        )
 
     def test_in_progress_message_no_text(self, monkeypatch):
         """poll() returns status with text=None for an in-progress message."""
@@ -207,6 +257,19 @@ class TestGenieAskEndpoint:
         assert data["conversation_id"] == "conv-abc"
         assert data["message_id"] == "msg-222"
 
+    def test_returns_502_when_sdk_raises(self, monkeypatch):
+        """Returns 502 with a friendly message when the SDK raises an exception."""
+        import backend.genie as genie_module
+        monkeypatch.setattr(settings, "genie_space_id", "space-xyz")
+        mock_ws = MagicMock()
+        mock_ws.genie.start_conversation.side_effect = Exception("network error")
+        monkeypatch.setattr(genie_module, "_ws_client", mock_ws)
+
+        r = _client.post("/api/genie/ask", json={"question": "test"})
+
+        assert r.status_code == 502
+        assert "Genie could not answer" in r.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # Endpoint tests: GET /api/genie/poll
@@ -237,3 +300,19 @@ class TestGeniePollEndpoint:
         data = r.json()
         assert data["status"] == "COMPLETED"
         assert "15,400 units" in data["text"]
+
+    def test_returns_502_when_sdk_raises(self, monkeypatch):
+        """Returns 502 with a friendly message when the SDK raises an exception."""
+        import backend.genie as genie_module
+        monkeypatch.setattr(settings, "genie_space_id", "space-xyz")
+        mock_ws = MagicMock()
+        mock_ws.genie.get_message.side_effect = Exception("workspace unavailable")
+        monkeypatch.setattr(genie_module, "_ws_client", mock_ws)
+
+        r = _client.get(
+            "/api/genie/poll",
+            params={"conversation_id": "conv-abc", "message_id": "msg-111"},
+        )
+
+        assert r.status_code == 502
+        assert "Genie could not answer" in r.json()["detail"]

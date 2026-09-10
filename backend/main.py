@@ -451,31 +451,47 @@ def api_genie_ask(body: GenieAskRequest) -> dict:
     so the caller can poll for the answer.
 
     Returns HTTP 503 when PET_GENIE_SPACE_ID is not configured.
+    Returns HTTP 502 when the Genie SDK call fails.
     """
     if not settings.genie_space_id:
         raise HTTPException(
             status_code=503,
             detail="Genie is not configured yet.",
         )
-    from backend import genie
-    return genie.ask(settings.genie_space_id, body.question, body.conversation_id)
+    try:
+        from backend import genie
+        return genie.ask(settings.genie_space_id, body.question, body.conversation_id)
+    except Exception as exc:
+        logger.warning("Genie ask failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Genie could not answer right now.",
+        )
 
 
 @app.get("/api/genie/poll")
 def api_genie_poll(conversation_id: str, message_id: str) -> dict:
     """Poll the status of a Genie message.
 
-    Returns {status, text} and, when present, {sql}.
+    Returns {status, text} and, when present, {sql} and {rows}.
 
     Returns HTTP 503 when PET_GENIE_SPACE_ID is not configured.
+    Returns HTTP 502 when the Genie SDK call fails.
     """
     if not settings.genie_space_id:
         raise HTTPException(
             status_code=503,
             detail="Genie is not configured yet.",
         )
-    from backend import genie
-    return genie.poll(settings.genie_space_id, conversation_id, message_id)
+    try:
+        from backend import genie
+        return genie.poll(settings.genie_space_id, conversation_id, message_id)
+    except Exception as exc:
+        logger.warning("Genie poll failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Genie could not answer right now.",
+        )
 
 
 # ---------------------------------------------------------------------------
