@@ -330,6 +330,7 @@ export default function GeniePanel({ isOpen, onClose }: GeniePanelProps) {
         try {
           pollResult = await geniePoll(conversationId, messageId);
         } catch (err) {
+          if (abortRef.current) return;
           if (isGenieNotConfigured(err)) {
             setGenieDisabled(true);
             setMessages((prev) => prev.filter((m) => !m.loading));
@@ -351,6 +352,7 @@ export default function GeniePanel({ isOpen, onClose }: GeniePanelProps) {
         }
 
         if (!shouldContinuePolling(pollResult.status ?? undefined)) {
+          if (abortRef.current) return;
           // Terminal state reached -- replace the loading placeholder.
           setMessages((prev) =>
             prev.map((m) =>
@@ -369,6 +371,7 @@ export default function GeniePanel({ isOpen, onClose }: GeniePanelProps) {
         }
       }
 
+      if (abortRef.current) return;
       // Max attempts exceeded.
       setMessages((prev) =>
         prev.map((m) =>

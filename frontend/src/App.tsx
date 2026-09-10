@@ -214,7 +214,9 @@ export default function App() {
       <>
         <Header runMeta={undefined} genieOpen={genieOpen} onGenieToggle={toggleGenie} />
         <ErrorShell message={error} onRetry={handleRetry} />
-        <GeniePanel isOpen={genieOpen} onClose={() => setGenieOpen(false)} />
+        <ErrorBoundary>
+          <GeniePanel isOpen={genieOpen} onClose={() => setGenieOpen(false)} />
+        </ErrorBoundary>
       </>
     );
   }
