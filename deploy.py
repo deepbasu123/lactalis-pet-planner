@@ -224,14 +224,15 @@ def _table_ddl(table_name: str) -> str:
 # Deploy-specific SQL helper (uses backend.db.run_sql -- single implementation)
 # ---------------------------------------------------------------------------
 
-def _insert_df(warehouse_id: str, table_fqn: str, df, batch: int = 100) -> None:
+def _insert_df(w, warehouse_id: str, table_fqn: str, df, batch: int = 100) -> None:
     """TRUNCATE table then INSERT all rows from a pandas DataFrame in batches.
 
     Full-table load helper used only at deploy time.  Delegates statement
-    execution to backend.db.run_sql so the execute-and-poll logic is not
-    duplicated here.
+    execution to backend.db.run_sql (single implementation) and passes the
+    caller-supplied WorkspaceClient so every INSERT targets the --profile
+    workspace, not the default profile.
     """
-    run_sql(warehouse_id, f"TRUNCATE TABLE {table_fqn}")
+    run_sql(warehouse_id, f"TRUNCATE TABLE {table_fqn}", client=w)
     cols = ", ".join(df.columns.tolist())
     n = len(df)
     for start in range(0, n, batch):
@@ -244,6 +245,7 @@ def _insert_df(warehouse_id: str, table_fqn: str, df, batch: int = 100) -> None:
         run_sql(
             warehouse_id,
             f"INSERT INTO {table_fqn} ({cols})\nVALUES\n{values_block}",
+            client=w,
         )
         log.info(
             "  inserted rows %d-%d of %d into %s",
@@ -297,7 +299,7 @@ def step_pick_warehouse(w, warehouse_id_arg: str | None) -> str:
 def step_create_schema(w, warehouse_id: str) -> None:
     """Step 2: Create schema IF NOT EXISTS."""
     log.info("[2/11] Creating schema %s.%s (IF NOT EXISTS)...", CATALOG, SCHEMA)
-    run_sql(warehouse_id, f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
+    run_sql(warehouse_id, f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}", client=w)
     log.info("  Schema ready.")
 
 
@@ -310,7 +312,7 @@ def step_create_tables(w, warehouse_id: str) -> None:
     log.info("[3/11] Creating %d Delta tables (IF NOT EXISTS)...", len(tables))
     for t in tables:
         ddl = _table_ddl(t)
-        run_sql(warehouse_id, ddl)
+        run_sql(warehouse_id, ddl, client=w)
         log.info("  Table ready: %s.%s.%s", CATALOG, SCHEMA, t)
 
 
@@ -327,7 +329,7 @@ def step_load_data(w, warehouse_id: str, ds: dict) -> None:
         fqn = f"{CATALOG}.{SCHEMA}.{name}"
         df = ds[name]
         log.info("  Loading %s (%d rows)...", fqn, len(df))
-        _insert_df(warehouse_id, fqn, df)
+        _insert_df(w, warehouse_id, fqn, df)
         log.info("  Loaded %s.", name)
 
 
@@ -354,7 +356,7 @@ def step_load_snapshot(w, warehouse_id: str, ds: dict) -> None:
 
     fqn = f"{CATALOG}.{SCHEMA}.projection_snapshot"
     log.info("  Loading projection_snapshot (%d rows)...", len(snap_df))
-    _insert_df(warehouse_id, fqn, snap_df)
+    _insert_df(w, warehouse_id, fqn, snap_df)
     log.info("  projection_snapshot loaded.")
 
 
@@ -378,11 +380,12 @@ def step_write_app_yaml(warehouse_id: str, genie_space_id: str) -> None:
 
 
 def step_create_or_update_app(w, profile: str) -> None:
-    """Step 8: Create the app if it does not exist; return the app URL.
+    """Step 8: Create the app record if it does not exist.
 
     Uses the Databricks CLI `databricks apps create` so the app record is
     registered.  Idempotent: if the app already exists the CLI returns an
-    error that we catch and ignore.
+    error that we catch and ignore.  The app URL is retrieved later in
+    step_sync_and_deploy after the source code has been deployed.
     """
     log.info("[8/11] Creating app '%s' (or verifying it exists)...", APP_NAME)
     result = subprocess.run(

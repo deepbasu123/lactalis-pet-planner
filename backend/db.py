@@ -86,12 +86,26 @@ def _fmt_val(val: Any) -> str:
     return _quote_str(str(val))
 
 
-def run_sql(warehouse_id: str, statement: str):
+def run_sql(warehouse_id: str, statement: str, client=None):
     """
     Execute a SQL statement via the Statement Execution API.
 
     Public function shared with deploy.py so the execute-and-poll logic
     lives in exactly one place.
+
+    Parameters
+    ----------
+    warehouse_id:
+        SQL warehouse to execute against.
+    statement:
+        SQL text to execute.
+    client:
+        Optional WorkspaceClient.  When None (the default, used by all
+        internal db.py callers), the module-level lazy singleton ``_client()``
+        is used -- auth comes from env / default profile.  deploy.py passes
+        its profile-built client explicitly so every deploy-time SQL statement
+        is guaranteed to run against the ``--profile`` workspace, not whatever
+        DEFAULT resolves to.
 
     Blocks for up to 30 s inline (wait_timeout). If still PENDING or RUNNING
     after that, polls every 2 s until the statement reaches a terminal state.
@@ -99,7 +113,7 @@ def run_sql(warehouse_id: str, statement: str):
     """
     from databricks.sdk.service.sql import StatementState
 
-    w = _client()
+    w = client if client is not None else _client()
     resp = w.statement_execution.execute_statement(
         warehouse_id=warehouse_id,
         statement=statement,
