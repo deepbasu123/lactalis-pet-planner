@@ -290,3 +290,39 @@ class TestTableDdl:
             assert "—" not in _table_ddl(name), (
                 f"em dash found in DDL for '{name}'"
             )
+
+
+# ---------------------------------------------------------------------------
+# _sync_args -- the `databricks sync` argv that ships the app source.
+#
+# Regression guard for the "{"detail":"Not Found"}" bug: the built SPA lives in
+# frontend/dist, which is .gitignored, and `databricks sync` skips .gitignore
+# entries by default. Without an explicit --include, the compiled frontend
+# never reaches the app and FastAPI has nothing to serve at /.
+# ---------------------------------------------------------------------------
+
+class TestSyncArgs:
+    def test_force_includes_built_frontend(self):
+        """The sync MUST force-include frontend/dist or the app 404s at /."""
+        args = _mod._sync_args("/Users/x/lactalis-pet-planner", "deep-test-1")
+        assert "--include" in args, "sync must pass --include to ship the SPA"
+        i = args.index("--include")
+        assert args[i + 1].startswith("frontend/dist"), (
+            "the --include pattern must select the built frontend (frontend/dist)"
+        )
+
+    def test_preserves_excludes(self):
+        args = _mod._sync_args("/ws", "p")
+        for pat in ("node_modules", ".venv", "__pycache__", ".git",
+                    ".superpowers", "docs", "*.pyc"):
+            assert pat in args, f"sync lost its exclude for '{pat}'"
+
+    def test_carries_profile(self):
+        args = _mod._sync_args("/ws", "myprofile")
+        assert "--profile" in args
+        i = args.index("--profile")
+        assert args[i + 1] == "myprofile"
+
+    def test_src_is_cwd_and_dst_is_workspace(self):
+        args = _mod._sync_args("/ws/app", "p")
+        assert args[:4] == ["databricks", "sync", ".", "/ws/app"]

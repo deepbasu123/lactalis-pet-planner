@@ -428,6 +428,31 @@ def _get_app_dict(w) -> dict:
     return w.api_client.do("GET", f"/api/2.0/apps/{APP_NAME}")
 
 
+# Sync argv construction is a pure helper so it can be unit-tested without a
+# workspace. The --include for frontend/dist is load-bearing: the built SPA is
+# .gitignored, and `databricks sync` skips .gitignore entries by default, so
+# without forcing it the deployed app has no static files and FastAPI returns
+# {"detail":"Not Found"} at /.
+_SYNC_INCLUDES = ("frontend/dist/**",)
+_SYNC_EXCLUDES = ("node_modules", ".venv", "__pycache__", ".git",
+                  ".superpowers", "docs", "*.pyc")
+
+
+def _sync_args(ws_sync_path: str, profile: str) -> list[str]:
+    """Return the argv for `databricks sync . <ws_sync_path>`.
+
+    Pure function (tested in tests/test_deploy.py). Force-includes the built
+    frontend (frontend/dist) that .gitignore would otherwise hide from sync.
+    """
+    args = ["databricks", "sync", ".", ws_sync_path]
+    for pat in _SYNC_INCLUDES:
+        args += ["--include", pat]
+    for pat in _SYNC_EXCLUDES:
+        args += ["--exclude", pat]
+    args += ["--profile", profile]
+    return args
+
+
 def step_sync_and_deploy(w, profile: str) -> str:
     """Step 9: Sync source to workspace and deploy. Returns the app URL."""
     log.info("[9/11] Syncing source code to workspace and deploying...")
@@ -443,20 +468,11 @@ def step_sync_and_deploy(w, profile: str) -> str:
     log.info("  Creating workspace directory...")
     w.workspace.mkdirs(ws_sync_path)
 
-    # Sync code (one-shot, no --watch)
+    # Sync code (one-shot, no --watch). _sync_args force-includes frontend/dist
+    # (built SPA) which is .gitignored and would otherwise be skipped by sync.
     log.info("  Syncing files...")
     subprocess.run(
-        [
-            "databricks", "sync", ".", ws_sync_path,
-            "--exclude", "node_modules",
-            "--exclude", ".venv",
-            "--exclude", "__pycache__",
-            "--exclude", ".git",
-            "--exclude", ".superpowers",
-            "--exclude", "docs",
-            "--exclude", "*.pyc",
-            "--profile", profile,
-        ],
+        _sync_args(ws_sync_path, profile),
         cwd=str(PROJECT_ROOT),
         check=True,
     )
