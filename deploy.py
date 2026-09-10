@@ -629,15 +629,11 @@ def _grant_warehouse(w, warehouse_id: str, sp_name: str) -> None:
 def _grant_genie_space(w, genie_space_id: str, sp_name: str) -> None:
     """CAN RUN on the Genie space.
 
-    DEPLOY-TIME NOTE: The permission endpoint for Genie spaces has not been
-    validated against a live workspace.  Two endpoint patterns are tried in
-    order; a warning is logged if both fail (manual grant via the UI works as
-    a fallback).
+    Confirmed live: object type is ``genie``, not ``dashboards`` or
+    ``genie_spaces``.  Uses PATCH so the grant merges into any existing ACL
+    rather than replacing it.
     """
-    endpoints = [
-        f"/api/2.0/permissions/dashboards/{genie_space_id}",
-        f"/api/2.0/permissions/genie_spaces/{genie_space_id}",
-    ]
+    endpoint = f"/api/2.0/permissions/genie/{genie_space_id}"
     body = {
         "access_control_list": [
             {
@@ -646,22 +642,15 @@ def _grant_genie_space(w, genie_space_id: str, sp_name: str) -> None:
             }
         ]
     }
-    last_exc: Exception | None = None
-    for endpoint in endpoints:
-        try:
-            w.api_client.do("PUT", endpoint, body=body)
-            log.info("  Granted CAN_RUN on Genie space %s to %s (via %s)",
-                     genie_space_id, sp_name, endpoint)
-            return
-        except Exception as exc:
-            last_exc = exc
-            log.debug("  Genie grant via %s failed: %s", endpoint, exc)
-
-    log.warning(
-        "  Genie space CAN RUN grant failed on all endpoints (requires live verification). "
-        "Grant manually: Genie space -> Share -> add SP with CAN RUN. Last error: %s",
-        last_exc,
-    )
+    try:
+        w.api_client.do("PATCH", endpoint, body=body)
+        log.info("  Granted CAN_RUN on Genie space %s to %s", genie_space_id, sp_name)
+    except Exception as exc:
+        log.warning(
+            "  Genie space CAN_RUN grant failed: %s. "
+            "Grant manually: Genie space -> Share -> add SP with CAN RUN.",
+            exc,
+        )
 
 
 def step_health_check(app_url: str, w=None, timeout_s: int = 60) -> None:
