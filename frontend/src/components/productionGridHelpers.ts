@@ -1,9 +1,74 @@
 /**
  * Pure helper functions for the ProductionGrid component.
  * Exported for unit testing.
+ *
+ * The real backend returns week_flags as a dict keyed by week_key:
+ *   { "2026-W35": { R1: bool, R2: bool, R3: bool, R4: bool, no_rule: bool, over: int }, … }
+ * This module converts that dict into flat BreachEntry records for display.
  */
 
-import type { CapacityFlag, PlanCell } from '../api';
+import type { PlanCell, WeekFlags } from '../api';
+
+// ── BreachEntry ───────────────────────────────────────────────────────────────
+
+/**
+ * One flattened capacity violation, ready for display.
+ * Derived from a (weekKey, WeekFlags) pair via collectBreaches().
+ */
+export interface BreachEntry {
+  week_key: string;
+  rule: string;   // "R1" | "R2" | "R3" | "R4" | "no_rule"
+  over: number;   // > 0 only for R3
+}
+
+// ── collectBreaches ───────────────────────────────────────────────────────────
+
+/**
+ * Flatten the week_flags dict into an ordered list of BreachEntry records.
+ * Weeks are iterated in insertion order (which matches the 1..52 horizon order
+ * returned by the backend). Within a week, rule priority is R4 > R1 > R2 > R3 > no_rule.
+ */
+export function collectBreaches(
+  weekFlags: Record<string, WeekFlags>,
+): BreachEntry[] {
+  const breaches: BreachEntry[] = [];
+  for (const [weekKey, flags] of Object.entries(weekFlags ?? {})) {
+    if (flags.R4) breaches.push({ week_key: weekKey, rule: 'R4', over: 0 });
+    if (flags.R1) breaches.push({ week_key: weekKey, rule: 'R1', over: 0 });
+    if (flags.R2) breaches.push({ week_key: weekKey, rule: 'R2', over: 0 });
+    if (flags.R3) breaches.push({ week_key: weekKey, rule: 'R3', over: flags.over });
+    if (flags.no_rule) breaches.push({ week_key: weekKey, rule: 'no_rule', over: 0 });
+  }
+  return breaches;
+}
+
+// ── formatBreachMessage ───────────────────────────────────────────────────────
+
+/**
+ * Format a BreachEntry into a short, human-readable breach message.
+ * Uses no em dashes.
+ */
+export function formatBreachMessage(entry: BreachEntry): string {
+  const { week_key: week, rule, over } = entry;
+  switch (rule) {
+    case 'R1':
+      return `${week}: Multiple pack sizes planned in one week (R1)`;
+    case 'R2':
+      return `${week}: More than 3 producing SKUs in one week (R2)`;
+    case 'R3': {
+      const detail = over > 0 ? ` - over by ${over.toLocaleString('en-AU')} EA` : '';
+      return `${week}: Over weekly capacity ceiling${detail} (R3)`;
+    }
+    case 'R4':
+      return `${week}: Production planned in a full-maintenance week (R4)`;
+    case 'no_rule':
+      return `${week}: Producing but no capacity ceiling could be determined`;
+    default:
+      return `${week}: ${rule}`;
+  }
+}
+
+// ── computeDirtyCount ─────────────────────────────────────────────────────────
 
 /**
  * Count cells in dirtyMap whose value genuinely differs from the server row.
@@ -28,29 +93,7 @@ export function computeDirtyCount(
   return count;
 }
 
-/**
- * Format a capacity flag into a short, human-readable breach message.
- * Uses no em dashes. For R3, includes the over-capacity detail from flag.message.
- */
-export function formatBreachMessage(flag: CapacityFlag): string {
-  const week = flag.week_key;
-  switch (flag.rule) {
-    case 'R1':
-      return `${week}: Multiple pack sizes planned in one week (R1)`;
-    case 'R2':
-      return `${week}: More than 3 producing SKUs in one week (R2)`;
-    case 'R3': {
-      const detail = flag.message ? ` - ${flag.message}` : '';
-      return `${week}: Over weekly capacity ceiling${detail} (R3)`;
-    }
-    case 'R4':
-      return `${week}: Production planned in a full-maintenance week (R4)`;
-    case 'R5':
-      return `${week}: Pack size changeover noted (R5)`;
-    default:
-      return `${week}: ${flag.rule}${flag.message ? ' - ' + flag.message : ''}`;
-  }
-}
+// ── buildServerMap ────────────────────────────────────────────────────────────
 
 /**
  * Build a lookup map from "skuCode|weekKey" to the server PlanCell.

@@ -2,6 +2,15 @@
  * Typed REST client for the PET Line Planner FastAPI backend.
  * All requests use credentials: "same-origin" so the session cookie
  * (required by edit endpoints) is forwarded on same-origin requests.
+ *
+ * Types are aligned to the real backend response models (backend/models.py).
+ * Key differences from naive assumptions:
+ *   - GET /api/config  -> "meta" (not "run_meta")
+ *   - GET /api/production -> "week_totals" (not "weekly_totals"),
+ *                            "week_flags"  (not "capacity_flags"),
+ *                            week_flags is a dict keyed by week_key (not an array)
+ *   - GET /api/summary -> "counts" dict (not "colour_counts" array),
+ *                         "original_vs_plan.original/working" colour-count dicts
  */
 
 // ── Domain types ─────────────────────────────────────────────────────────────
@@ -32,19 +41,21 @@ export interface Parameter {
   description: string;
 }
 
+/** Matches backend ConfigMeta model. */
 export interface RunMeta {
   sku_count: number;
   week_count: number;
-  total_production: number; // total planned production (EA) across all SKUs/weeks
+  total_production: number;
 }
 
 // ── GET /api/config ──────────────────────────────────────────────────────────
+// Backend field is "meta" (not "run_meta").
 
 export interface ConfigResponse {
   skus: SKU[];
   weeks: Week[];
   parameters: Parameter[];
-  run_meta: RunMeta;
+  meta: RunMeta;   // ← "meta" in the real backend response
 }
 
 // ── GET /api/supply ──────────────────────────────────────────────────────────
@@ -70,42 +81,44 @@ export interface SupplyResponse {
 }
 
 // ── GET /api/production ──────────────────────────────────────────────────────
+// "week_totals" and "week_flags" are the real field names.
+// "week_flags" is a dict keyed by week_key; each value carries R1..R4 booleans
+// and an "over" integer (units over ceiling when R3 fires, else 0).
 
 export interface PlanCell {
   sku_code: string;
   week_key: string;
   planned_qty: number;
-  orig_qty: number;
+  orig_qty?: number;   // present only in live UC mode; absent from synthetic data
 }
 
-export interface CapacityFlag {
-  week_key: string;
-  rule: string;    // "R1" | "R2" | "R3" | "R4" | "R5"
-  message: string;
+/** Capacity flags for one week — returned as a flat dict value in week_flags. */
+export interface WeekFlags {
+  R1: boolean;        // multiple pack sizes in one week
+  R2: boolean;        // more than 3 producing SKUs
+  R3: boolean;        // total production exceeds ceiling
+  R4: boolean;        // Full maintenance week with any production
+  no_rule: boolean;   // producing but no ceiling could be determined
+  over: number;       // units above ceiling (> 0 only when R3 is true)
 }
 
 export interface ProductionResponse {
   rows: PlanCell[];
-  weekly_totals: Record<string, number>; // week_key -> total EA
-  capacity_flags: CapacityFlag[];
+  week_totals: Record<string, number>;   // week_key -> total EA
+  week_flags: Record<string, WeekFlags>; // week_key -> flag set
+  changeovers: number;
 }
 
 // ── GET /api/summary ─────────────────────────────────────────────────────────
-
-export interface ColourCount {
-  colour: string;
-  count: number;
-}
-
-export interface OrigVsPlan {
-  original_total: number;
-  plan_total: number;
-  diff: number;
-}
+// "counts" is a plain dict (colour -> count), not an array.
+// "original_vs_plan" holds "original" and "working" colour-count dicts.
 
 export interface SummaryResponse {
-  colour_counts: ColourCount[];
-  original_vs_plan: OrigVsPlan;
+  counts: Record<string, number>;            // colour -> count
+  original_vs_plan: {
+    original: Record<string, number>;        // colour -> count (SNP baseline)
+    working: Record<string, number>;         // colour -> count (current working copy)
+  };
 }
 
 // ── POST /api/production/edit ────────────────────────────────────────────────
@@ -116,18 +129,29 @@ export interface EditCellRequest {
   qty: number;
 }
 
+/** Backend returns status + echoed fields, NOT {ok, violations}. */
 export interface EditCellResponse {
-  ok: boolean;
-  violations: string[];
+  status: string;    // "ok"
+  sku_code: string;
+  week_key: string;
+  qty: number;
 }
 
-// ── Generic ok response ───────────────────────────────────────────────────────
+// ── POST /api/production/save ────────────────────────────────────────────────
 
-export interface OkResponse {
-  ok: boolean;
+export interface SaveResponse {
+  status: string;  // "ok"
+  saved: number;   // rows written (or would-be in demo mode)
 }
 
-// ── POST /api/production/reset-week ─────────────────────────────────────────
+// ── POST /api/production/discard, POST /api/production/reset-week ────────────
+
+export interface DiscardResponse {
+  status: string;  // "ok"
+  cleared: number; // overlay entries removed
+}
+
+// ── POST /api/production/reset-week (request body) ───────────────────────────
 
 export interface ResetWeekRequest {
   week_key: string;
@@ -218,23 +242,23 @@ export const fetchSummary = (): Promise<SummaryResponse> =>
 export const editCell = (req: EditCellRequest): Promise<EditCellResponse> =>
   jsonPost<EditCellResponse>('/api/production/edit', req);
 
-export const saveProduction = (): Promise<OkResponse> =>
-  jsonPost<OkResponse>('/api/production/save', {});
+export const saveProduction = (): Promise<SaveResponse> =>
+  jsonPost<SaveResponse>('/api/production/save', {});
 
-export const discardProduction = (): Promise<OkResponse> =>
-  jsonPost<OkResponse>('/api/production/discard', {});
+export const discardProduction = (): Promise<DiscardResponse> =>
+  jsonPost<DiscardResponse>('/api/production/discard', {});
 
-export const resetWeek = (req: ResetWeekRequest): Promise<OkResponse> =>
-  jsonPost<OkResponse>('/api/production/reset-week', req);
+export const resetWeek = (req: ResetWeekRequest): Promise<DiscardResponse> =>
+  jsonPost<DiscardResponse>('/api/production/reset-week', req);
 
-export const updateParameters = (req: ParameterUpdates): Promise<OkResponse> =>
-  jsonPut<OkResponse>('/api/parameters', req);
+export const updateParameters = (req: ParameterUpdates): Promise<DiscardResponse> =>
+  jsonPut<DiscardResponse>('/api/parameters', req);
 
-export const updateWeek = (req: WeekUpdate): Promise<OkResponse> =>
-  jsonPut<OkResponse>('/api/weeks', req);
+export const updateWeek = (req: WeekUpdate): Promise<DiscardResponse> =>
+  jsonPut<DiscardResponse>('/api/weeks', req);
 
-export const updateSKU = (req: SKUUpdate): Promise<OkResponse> =>
-  jsonPut<OkResponse>('/api/skus', req);
+export const updateSKU = (req: SKUUpdate): Promise<DiscardResponse> =>
+  jsonPut<DiscardResponse>('/api/skus', req);
 
 export const genieAsk = (req: GenieAskRequest): Promise<GenieAskResponse> =>
   jsonPost<GenieAskResponse>('/api/genie/ask', req);
@@ -247,5 +271,5 @@ export const geniePoll = (
     `/api/genie/poll?conversation_id=${encodeURIComponent(conversationId)}&message_id=${encodeURIComponent(messageId)}`,
   );
 
-export const recalc = (): Promise<OkResponse> =>
-  jsonPost<OkResponse>('/api/recalc', {});
+export const recalc = (): Promise<unknown> =>
+  jsonPost<unknown>('/api/recalc', {});

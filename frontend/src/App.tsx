@@ -1,10 +1,49 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, Component } from 'react';
+import type { ReactNode, ErrorInfo } from 'react';
 import './theme.css';
 import Header from './components/Header';
 import SupplyGrid from './components/SupplyGrid';
 import ProductionGrid from './components/ProductionGrid';
 import { fetchConfig } from './api';
 import type { ConfigResponse } from './api';
+
+// ── Error boundary ────────────────────────────────────────────────────────────
+
+interface EBState { hasError: boolean; message: string }
+
+class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+
+  static getDerivedStateFromError(err: unknown): EBState {
+    const message = err instanceof Error ? err.message : String(err);
+    return { hasError: true, message };
+  }
+
+  componentDidCatch(err: Error, info: ErrorInfo) {
+    console.error('[ErrorBoundary]', err, info);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="error-card" style={{ margin: 'var(--sp-8) auto', maxWidth: 560 }}>
+          <h2>Something went wrong</h2>
+          <p>{this.state.message}</p>
+          <button
+            className="retry-btn"
+            onClick={() => this.setState({ hasError: false, message: '' })}
+          >
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // ── Tab definitions ───────────────────────────────────────────────────────────
 
@@ -169,7 +208,7 @@ export default function App() {
   return (
     <div className="app-layout">
       {/* ── Fixed header ──────────────────────────────── */}
-      <Header runMeta={config?.run_meta} />
+      <Header runMeta={config?.meta} />
 
       {/* ── Tab navigation ────────────────────────────── */}
       <nav className="tab-nav" role="tablist" aria-label="Planner tabs">
@@ -195,6 +234,7 @@ export default function App() {
         aria-labelledby={`tab-${activeTab}`}
         className="tab-content"
       >
+      <ErrorBoundary>
         {activeTab === 'production' ? (
           <>
             {/* Hero supply grid — re-fetches when dataVersion increments */}
@@ -214,6 +254,7 @@ export default function App() {
             desc={activeTabDef.desc}
           />
         )}
+      </ErrorBoundary>
       </main>
     </div>
   );

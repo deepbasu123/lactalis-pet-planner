@@ -25,11 +25,12 @@ import {
   discardProduction,
   resetWeek,
 } from '../api';
-import type { PlanCell, CapacityFlag, Week, SKU } from '../api';
+import type { PlanCell, WeekFlags, Week, SKU } from '../api';
 import { formatValue, isoWeekLabel, fmtShortDate } from './supplyGridHelpers';
 import {
   computeDirtyCount,
   formatBreachMessage,
+  collectBreaches,
   buildServerMap,
 } from './productionGridHelpers';
 import './ProductionGrid.css';
@@ -65,8 +66,9 @@ function LockIcon({ size = 12 }: { size?: number }) {
 
 // ── Capacity validation banner ─────────────────────────────────────────────────
 
-function ValidationBanner({ flags }: { flags: CapacityFlag[] }) {
-  if (flags.length === 0) {
+function ValidationBanner({ weekFlags }: { weekFlags: Record<string, WeekFlags> }) {
+  const breaches = collectBreaches(weekFlags ?? {});
+  if (breaches.length === 0) {
     return (
       <div className="pg-banner pg-banner--ok" role="status" aria-live="polite">
         <span className="pg-banner-icon" aria-hidden="true">&#10003;</span>
@@ -79,11 +81,11 @@ function ValidationBanner({ flags }: { flags: CapacityFlag[] }) {
       <span className="pg-banner-icon" aria-hidden="true">!</span>
       <div className="pg-banner-content">
         <span className="pg-banner-title">
-          {flags.length} capacity breach{flags.length > 1 ? 'es' : ''} detected
+          {breaches.length} capacity breach{breaches.length > 1 ? 'es' : ''} detected
         </span>
         <ul className="pg-banner-list">
-          {flags.map((f, i) => (
-            <li key={i}>{formatBreachMessage(f)}</li>
+          {breaches.map((b, i) => (
+            <li key={i}>{formatBreachMessage(b)}</li>
           ))}
         </ul>
       </div>
@@ -149,7 +151,8 @@ export default function ProductionGrid({
   // ── Server state ─────────────────────────────────────────────────────────────
   const [serverRows, setServerRows] = useState<PlanCell[]>([]);
   const [serverTotals, setServerTotals] = useState<Record<string, number>>({});
-  const [capacityFlags, setCapacityFlags] = useState<CapacityFlag[]>([]);
+  // week_flags is a dict keyed by week_key -> {R1,R2,R3,R4,no_rule,over}
+  const [weekFlagsState, setWeekFlagsState] = useState<Record<string, WeekFlags>>({});
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -184,9 +187,9 @@ export default function ProductionGrid({
     setFetchError(null);
     void fetchProduction()
       .then((data) => {
-        setServerRows(data.rows);
-        setServerTotals(data.weekly_totals);
-        setCapacityFlags(data.capacity_flags);
+        setServerRows(data.rows ?? []);
+        setServerTotals(data.week_totals ?? {});
+        setWeekFlagsState(data.week_flags ?? {});
       })
       .catch((err: unknown) => {
         setFetchError(err instanceof Error ? err.message : 'Failed to load production data');
@@ -367,9 +370,9 @@ export default function ProductionGrid({
     try {
       await saveProduction();
       const fresh = await fetchProduction();
-      setServerRows(fresh.rows);
-      setServerTotals(fresh.weekly_totals);
-      setCapacityFlags(fresh.capacity_flags);
+      setServerRows(fresh.rows ?? []);
+      setServerTotals(fresh.week_totals ?? {});
+      setWeekFlagsState(fresh.week_flags ?? {});
       setDirtyMap({});
       onDataChange();
       // Show success toast
@@ -389,9 +392,9 @@ export default function ProductionGrid({
     try {
       await discardProduction();
       const fresh = await fetchProduction();
-      setServerRows(fresh.rows);
-      setServerTotals(fresh.weekly_totals);
-      setCapacityFlags(fresh.capacity_flags);
+      setServerRows(fresh.rows ?? []);
+      setServerTotals(fresh.week_totals ?? {});
+      setWeekFlagsState(fresh.week_flags ?? {});
       setDirtyMap({});
       setEditingCell(null);
       onDataChange();
@@ -409,9 +412,9 @@ export default function ProductionGrid({
     try {
       await resetWeek({ week_key: targetWeek });
       const fresh = await fetchProduction();
-      setServerRows(fresh.rows);
-      setServerTotals(fresh.weekly_totals);
-      setCapacityFlags(fresh.capacity_flags);
+      setServerRows(fresh.rows ?? []);
+      setServerTotals(fresh.week_totals ?? {});
+      setWeekFlagsState(fresh.week_flags ?? {});
       // Remove dirty entries for the reset week
       setDirtyMap((prev) => {
         const n = { ...prev };
@@ -521,7 +524,7 @@ export default function ProductionGrid({
       </div>
 
       {/* ── Capacity validation banner ───────────────────── */}
-      <ValidationBanner flags={capacityFlags} />
+      <ValidationBanner weekFlags={weekFlagsState} />
 
       {/* ── Success toast ────────────────────────────────── */}
       {saveToast && (

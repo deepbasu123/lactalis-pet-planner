@@ -1,15 +1,29 @@
 import { describe, it, expect } from 'vitest';
-import { computeDirtyCount, formatBreachMessage, buildServerMap } from './productionGridHelpers';
-import type { PlanCell, CapacityFlag } from '../api';
+import {
+  computeDirtyCount,
+  formatBreachMessage,
+  collectBreaches,
+  buildServerMap,
+} from './productionGridHelpers';
+import type { BreachEntry } from './productionGridHelpers';
+import type { PlanCell, WeekFlags } from '../api';
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 function row(skuCode: string, weekKey: string, qty: number): PlanCell {
-  return { sku_code: skuCode, week_key: weekKey, planned_qty: qty, orig_qty: qty };
+  return { sku_code: skuCode, week_key: weekKey, planned_qty: qty };
 }
 
-function flag(weekKey: string, rule: string, message = ''): CapacityFlag {
-  return { week_key: weekKey, rule, message };
+function allClear(): WeekFlags {
+  return { R1: false, R2: false, R3: false, R4: false, no_rule: false, over: 0 };
+}
+
+function breach(entry: Partial<WeekFlags>): WeekFlags {
+  return { ...allClear(), ...entry };
+}
+
+function entry(week_key: string, rule: string, over = 0): BreachEntry {
+  return { week_key, rule, over };
 }
 
 // ── computeDirtyCount ─────────────────────────────────────────────────────────
@@ -60,60 +74,111 @@ describe('computeDirtyCount', () => {
   });
 });
 
+// ── collectBreaches ───────────────────────────────────────────────────────────
+
+describe('collectBreaches', () => {
+  it('returns empty array when all flags are clear', () => {
+    const flags = { '2026-W35': allClear(), '2026-W36': allClear() };
+    expect(collectBreaches(flags)).toHaveLength(0);
+  });
+
+  it('returns an entry for each breaching rule', () => {
+    const flags = { '2026-W35': breach({ R1: true, R2: true }) };
+    const result = collectBreaches(flags);
+    expect(result).toHaveLength(2);
+    expect(result.some(e => e.rule === 'R1')).toBe(true);
+    expect(result.some(e => e.rule === 'R2')).toBe(true);
+    expect(result.every(e => e.week_key === '2026-W35')).toBe(true);
+  });
+
+  it('includes the over amount for R3', () => {
+    const flags = { '2026-W37': breach({ R3: true, over: 75_000 }) };
+    const result = collectBreaches(flags);
+    const r3 = result.find(e => e.rule === 'R3');
+    expect(r3).toBeDefined();
+    expect(r3?.over).toBe(75_000);
+  });
+
+  it('handles no_rule flag', () => {
+    const flags = { '2026-W38': breach({ no_rule: true }) };
+    const result = collectBreaches(flags);
+    expect(result.some(e => e.rule === 'no_rule')).toBe(true);
+  });
+
+  it('collects breaches from multiple weeks', () => {
+    const flags = {
+      '2026-W35': breach({ R1: true }),
+      '2026-W36': allClear(),
+      '2026-W37': breach({ R4: true }),
+    };
+    const result = collectBreaches(flags);
+    expect(result).toHaveLength(2);
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(collectBreaches({})).toHaveLength(0);
+  });
+
+  it('handles undefined/null input gracefully (hardened null-safety)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(collectBreaches(undefined as any)).toHaveLength(0);
+  });
+});
+
 // ── formatBreachMessage ───────────────────────────────────────────────────────
 
 describe('formatBreachMessage', () => {
   it('formats R1 correctly', () => {
-    const msg = formatBreachMessage(flag('2026-W35', 'R1'));
+    const msg = formatBreachMessage(entry('2026-W35', 'R1'));
     expect(msg).toContain('2026-W35');
     expect(msg).toContain('R1');
     expect(msg).toContain('pack size');
   });
 
   it('formats R2 correctly', () => {
-    const msg = formatBreachMessage(flag('2026-W36', 'R2'));
+    const msg = formatBreachMessage(entry('2026-W36', 'R2'));
     expect(msg).toContain('2026-W36');
     expect(msg).toContain('R2');
     expect(msg).toContain('3');
   });
 
-  it('formats R3 without detail when message is empty', () => {
-    const msg = formatBreachMessage(flag('2026-W37', 'R3'));
+  it('formats R3 without detail when over is 0', () => {
+    const msg = formatBreachMessage(entry('2026-W37', 'R3', 0));
     expect(msg).toContain('2026-W37');
     expect(msg).toContain('R3');
     expect(msg).toContain('capacity ceiling');
+    expect(msg).not.toContain('over by');
   });
 
-  it('formats R3 with over-capacity detail from message', () => {
-    const msg = formatBreachMessage(flag('2026-W38', 'R3', 'over by 50,000 EA'));
-    expect(msg).toContain('over by 50,000 EA');
+  it('formats R3 with over-capacity detail when over > 0', () => {
+    const msg = formatBreachMessage(entry('2026-W38', 'R3', 75_000));
+    expect(msg).toContain('over by');
+    expect(msg).toContain('75,000');
     expect(msg).toContain('R3');
   });
 
   it('formats R4 correctly', () => {
-    const msg = formatBreachMessage(flag('2026-W40', 'R4'));
+    const msg = formatBreachMessage(entry('2026-W40', 'R4'));
     expect(msg).toContain('R4');
     expect(msg).toContain('maintenance');
   });
 
-  it('formats R5 correctly', () => {
-    const msg = formatBreachMessage(flag('2026-W42', 'R5'));
-    expect(msg).toContain('R5');
+  it('formats no_rule correctly', () => {
+    const msg = formatBreachMessage(entry('2026-W42', 'no_rule'));
+    expect(msg).toContain('2026-W42');
+    expect(msg).toContain('ceiling');
   });
 
   it('handles unknown rules gracefully', () => {
-    const msg = formatBreachMessage(flag('2026-W43', 'R9', 'custom violation'));
+    const msg = formatBreachMessage(entry('2026-W43', 'R9'));
     expect(msg).toContain('2026-W43');
     expect(msg).toContain('R9');
-    expect(msg).toContain('custom violation');
   });
 
   it('never uses em dashes', () => {
-    const flags: CapacityFlag[] = ['R1', 'R2', 'R3', 'R4', 'R5'].map(r =>
-      flag('2026-W35', r, 'some detail'),
-    );
-    for (const f of flags) {
-      expect(formatBreachMessage(f)).not.toContain('—'); // em dash
+    const rules = ['R1', 'R2', 'R3', 'R4', 'no_rule'];
+    for (const rule of rules) {
+      expect(formatBreachMessage(entry('2026-W35', rule, 50_000))).not.toContain('—');
     }
   });
 });

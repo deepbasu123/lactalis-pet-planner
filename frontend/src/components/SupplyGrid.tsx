@@ -353,9 +353,9 @@ export default function SupplyGrid({ dataVersion = 0 }: SupplyGridProps) {
 
     void Promise.all([fetchSupply(), fetchConfig()])
       .then(([supplyData, configData]) => {
-        setSupply(supplyData.rows);
-        setSkus(configData.skus);
-        setWeeks(configData.weeks);
+        setSupply(supplyData.rows ?? []);
+        setSkus(configData.skus ?? []);
+        setWeeks(configData.weeks ?? []);
       })
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : 'Failed to load supply data');
