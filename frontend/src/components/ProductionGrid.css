@@ -1,0 +1,809 @@
+/*
+ * ProductionGrid — Editable PET production plan grid
+ * Bounded scroll container: sticky SKU column + sticky header + sticky total row
+ * all scoped within the card's overflow:auto container.
+ * Lactalis brand: blue #004B85, sky #5BC5F2, sharp corners, large numeric font.
+ */
+
+/* ── CSS custom properties for this component ──────────────────────── */
+
+:root {
+  --pg-header-h:    52px;   /* height of the thead row within the container */
+  --pg-total-h:     40px;   /* height of the total row */
+  --pg-sku-w:       220px;  /* sticky SKU column width */
+  --pg-cell-w:      108px;  /* regular data cell width */
+  --pg-cell-h:       38px;  /* row height */
+  --pg-dirty-bg:    #fffbe6; /* warm amber tint for dirty cells */
+  --pg-dirty-border:#E8A317; /* amber accent for dirty-cell border */
+  --pg-locked-bg:   #f8f9fb; /* muted surface for locked cells */
+  --pg-locked-text: #a0aec0;
+  --pg-total-bg:    #f0f4f8; /* header-ish blue-grey for total row */
+  --pg-total-text:  var(--lac-blue);
+}
+
+/* ── Card wrapper ────────────────────────────────────────────────────── */
+
+.pg-card {
+  background: var(--bg);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  margin-top: var(--sp-6);
+  position: relative;
+  overflow: hidden; /* clip the toast safely */
+}
+
+/* ── Card header bar ─────────────────────────────────────────────────── */
+
+.pg-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-3) var(--sp-5);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-light);
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  row-gap: var(--sp-2);
+}
+
+.pg-header-left {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  flex-shrink: 0;
+}
+
+.pg-title {
+  font-size: var(--text-lg);
+  font-weight: 700;
+  color: var(--lac-blue);
+  letter-spacing: -0.01em;
+}
+
+.pg-subtitle {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+/* ── Action bar ──────────────────────────────────────────────────────── */
+
+.pg-action-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+/* Active-week chip shown when a week is selected */
+.pg-active-week-chip {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+/* Base action button */
+.pg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 14px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-family: var(--font-sans);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background var(--ease-fast),
+    border-color var(--ease-fast),
+    color var(--ease-fast),
+    opacity var(--ease-fast);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.pg-action-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.pg-action-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+/* Discard */
+.pg-discard-btn {
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+
+.pg-discard-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+/* Reset week */
+.pg-reset-btn {
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+
+.pg-reset-btn:hover:not(:disabled) {
+  background: #fff8e1;
+  color: #7c5c00;
+  border-color: #E8A317;
+}
+
+/* Save */
+.pg-save-btn {
+  background: var(--lac-blue);
+  color: #fff;
+  border-color: var(--lac-blue);
+}
+
+.pg-save-btn:hover:not(:disabled) {
+  background: #003a6b;
+  border-color: #003a6b;
+}
+
+/* Dirty state: save button gets a vivid accent */
+.pg-save-btn--dirty {
+  background: var(--lac-blue);
+  border-color: var(--lac-blue);
+  box-shadow: 0 0 0 2px rgba(0, 75, 133, 0.22);
+}
+
+/* Unsaved count badge */
+.pg-save-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--lac-blue);
+  background: #d0e8ff;
+  border-radius: 9px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+/* ── Capacity validation banner ──────────────────────────────────────── */
+
+.pg-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-5);
+  font-size: var(--text-sm);
+  border-bottom: 1px solid transparent;
+}
+
+.pg-banner--ok {
+  background: #f0faf4;
+  color: #1a6636;
+  border-bottom-color: #bee5ca;
+}
+
+.pg-banner--breach {
+  background: #fff5f5;
+  color: #8b1a1a;
+  border-bottom-color: #fed7d7;
+}
+
+.pg-banner-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  font-size: 11px;
+  font-weight: 800;
+  border-radius: 50%;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+.pg-banner--ok .pg-banner-icon {
+  background: #2E9E5B;
+  color: #fff;
+}
+
+.pg-banner--breach .pg-banner-icon {
+  background: #E1382D;
+  color: #fff;
+}
+
+.pg-banner-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pg-banner-title {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.pg-banner-list {
+  margin: 0;
+  padding-left: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pg-banner-list li {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.01em;
+}
+
+/* ── Toast ───────────────────────────────────────────────────────────── */
+
+@keyframes pg-toast-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+
+@keyframes pg-toast-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+.pg-toast {
+  position: absolute;
+  bottom: var(--sp-4);
+  right: var(--sp-5);
+  z-index: 200;
+  background: #f0faf4;
+  color: #1a6636;
+  border: 1px solid #bee5ca;
+  border-left: 3px solid #2E9E5B;
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  animation: pg-toast-in 150ms ease;
+  pointer-events: none;
+}
+
+.pg-toast-icon {
+  font-size: 14px;
+}
+
+/* ── Scroll container ────────────────────────────────────────────────── */
+
+.pg-scroll-wrap {
+  max-height: 480px;
+  overflow: auto;
+  position: relative;
+  /* Subtle right-edge overflow indicator */
+  background:
+    linear-gradient(to right,  var(--bg) 20px, transparent 20px),
+    linear-gradient(to left,   rgba(0, 75, 133, 0.06) 0px, transparent 16px) right;
+  background-color: var(--bg);
+  background-size: 100% 100%, 40px 100%;
+  background-attachment: local, scroll;
+  background-repeat: no-repeat;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── Table ───────────────────────────────────────────────────────────── */
+
+.pg-table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  min-width: 100%;
+  font-size: var(--text-base);
+}
+
+/* ── Header row (sticky within scroll container) ─────────────────────── */
+
+.pg-th {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
+  border-bottom: 2px solid var(--lac-blue);
+  border-right: 1px solid var(--border-light);
+  padding: var(--sp-1) var(--sp-2);
+  text-align: center;
+  vertical-align: middle;
+  white-space: nowrap;
+  height: var(--pg-header-h);
+  box-shadow: 0 2px 4px rgba(0, 75, 133, 0.08);
+  cursor: default;
+}
+
+/* SKU header corner: sticky top AND left */
+.pg-th-sku {
+  left: 0;
+  z-index: 30;
+  text-align: left;
+  min-width: var(--pg-sku-w);
+  width: var(--pg-sku-w);
+  padding-left: var(--sp-4);
+  border-right: 2px solid var(--border);
+}
+
+/* Regular week header columns */
+.pg-th-week {
+  min-width: var(--pg-cell-w);
+  width: var(--pg-cell-w);
+  cursor: pointer;
+  transition:
+    background var(--ease-fast),
+    color var(--ease-fast);
+}
+
+.pg-th-week:hover {
+  background: var(--hover-bg);
+}
+
+/* Selected week header */
+.pg-th-week--active {
+  background: var(--active-bg);
+  border-bottom-color: var(--lac-blue);
+}
+
+.pg-th-week--active .pg-week-iso {
+  color: var(--lac-blue);
+}
+
+.pg-col-label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.pg-week-iso {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+
+.pg-week-date {
+  display: block;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 400;
+  line-height: 1.2;
+  margin-top: 1px;
+}
+
+/* Lock badge in week header */
+.pg-week-lock-badge {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--lac-sky);
+  margin-left: 4px;
+  vertical-align: middle;
+  margin-top: -1px;
+}
+
+/* ── Total row (sticky within scroll container, just below header) ─────── */
+
+.pg-row--total .pg-td {
+  position: sticky;
+  top: var(--pg-header-h);
+  z-index: 12;
+  background: var(--pg-total-bg);
+  border-bottom: 2px solid var(--border);
+  height: var(--pg-total-h);
+}
+
+/* Total row: corner cell sticks both ways */
+.pg-row--total .pg-td-sku {
+  z-index: 22;
+  background: var(--pg-total-bg);
+}
+
+.pg-td-total-label {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--pg-total-text);
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pg-td-total {
+  text-align: right;
+  padding: var(--sp-1) var(--sp-2);
+}
+
+.pg-td-total .pg-cell-val {
+  font-size: var(--text-num);
+  font-weight: 700;
+  color: var(--pg-total-text);
+}
+
+/* ── Sticky SKU column (body rows) ───────────────────────────────────── */
+
+.pg-td-sku {
+  position: sticky;
+  left: 0;
+  z-index: 10;
+  background: var(--bg);
+  border-right: 2px solid var(--border);
+  border-bottom: 1px solid var(--border-light);
+  min-width: var(--pg-sku-w);
+  width: var(--pg-sku-w);
+  padding: 0 var(--sp-3);
+  vertical-align: middle;
+  height: var(--pg-cell-h);
+  transition: background var(--ease-fast);
+  overflow: hidden;
+}
+
+.pg-td-sku-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  overflow: hidden;
+}
+
+.pg-sku-priority {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--lac-blue);
+  border-radius: 50%;
+  flex-shrink: 0;
+  letter-spacing: 0;
+}
+
+.pg-sku-desc {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.pg-sku-pack {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ── Body rows ────────────────────────────────────────────────────────── */
+
+.pg-row--alt .pg-td-sku {
+  background: var(--surface-1);
+}
+
+.pg-row:hover .pg-td-sku,
+.pg-row--alt:hover .pg-td-sku {
+  background: var(--hover-bg);
+}
+
+/* ── Data cells ───────────────────────────────────────────────────────── */
+
+.pg-td {
+  border-right: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-light);
+  vertical-align: middle;
+  height: var(--pg-cell-h);
+  min-width: var(--pg-cell-w);
+  width: var(--pg-cell-w);
+  padding: 0;
+  position: relative;
+}
+
+/* Editable cell base: shows cursor affordance */
+.pg-td-cell {
+  cursor: default;
+  transition:
+    background var(--ease-fast),
+    box-shadow var(--ease-fast);
+}
+
+/* Hover affordance for editable cells */
+.pg-td-cell:not(.pg-td-locked):hover {
+  background: var(--hover-bg);
+}
+
+/* Focus-within (when input is active inside the cell) */
+.pg-td-cell:not(.pg-td-locked):focus-within {
+  box-shadow: inset 0 0 0 2px var(--lac-blue);
+  z-index: 5;
+  background: #fff;
+}
+
+/* Dirty cell highlight */
+.pg-td-dirty {
+  background: var(--pg-dirty-bg) !important;
+  border-right-color: var(--pg-dirty-border) !important;
+  border-bottom-color: var(--pg-dirty-border) !important;
+}
+
+.pg-td-dirty:hover {
+  background: #fff8d0 !important;
+}
+
+/* In-flight (API call pending) */
+.pg-td-pending::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--lac-sky), var(--lac-blue), var(--lac-sky));
+  background-size: 200% 100%;
+  animation: pg-pending-bar 1.2s linear infinite;
+}
+
+@keyframes pg-pending-bar {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Locked cell */
+.pg-td-locked {
+  background: var(--pg-locked-bg) !important;
+  cursor: not-allowed;
+}
+
+/* ── Cell inner layout ────────────────────────────────────────────────── */
+
+/* Normal (non-editing) cell: stepper buttons appear on hover / focus-within row */
+.pg-cell-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px;
+  padding: 0 3px;
+  height: 100%;
+}
+
+/* The clickable value span inside an editable cell */
+.pg-cell-val-btn {
+  flex: 1;
+  text-align: right;
+  cursor: text;
+  padding: 2px 3px;
+  border-radius: var(--radius-sm);
+  transition: background var(--ease-fast);
+  min-width: 0;
+}
+
+.pg-cell-val-btn:hover,
+.pg-cell-val-btn:focus-visible {
+  background: rgba(0, 75, 133, 0.07);
+  outline: none;
+}
+
+/* The numeric value in any cell context */
+.pg-cell-val {
+  font-size: var(--text-num);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  display: block;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+/* Locked cell value: muted */
+.pg-td-locked .pg-cell-val {
+  color: var(--pg-locked-text);
+  font-weight: 500;
+}
+
+/* ── Stepper buttons (+/-) ────────────────────────────────────────────── */
+
+.pg-stepper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 22px;
+  min-width: 20px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background var(--ease-fast),
+    color var(--ease-fast),
+    border-color var(--ease-fast);
+  font-family: var(--font-sans);
+  /* Hidden by default, revealed on row/cell hover */
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Reveal steppers on cell hover or focus */
+.pg-td-cell:not(.pg-td-locked):hover .pg-stepper,
+.pg-td-cell:not(.pg-td-locked):focus-within .pg-stepper {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pg-stepper:hover {
+  background: var(--lac-blue);
+  color: #fff;
+  border-color: var(--lac-blue);
+}
+
+.pg-stepper:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pg-stepper:active {
+  background: #003a6b;
+  color: #fff;
+}
+
+/* ── Inline edit input ────────────────────────────────────────────────── */
+
+.pg-edit-wrap {
+  display: flex;
+  align-items: center;
+  padding: 0 3px;
+  height: 100%;
+}
+
+.pg-input {
+  width: 100%;
+  height: 28px;
+  border: 1px solid var(--lac-blue);
+  border-radius: var(--radius-sm);
+  padding: 0 6px;
+  font-size: var(--text-num);
+  font-weight: 600;
+  font-family: var(--font-sans);
+  font-feature-settings: "tnum" 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  background: #fff;
+  outline: none;
+  text-align: right;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06);
+  /* Remove number input spinners */
+  -moz-appearance: textfield;
+}
+
+.pg-input::-webkit-outer-spin-button,
+.pg-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ── Lock icon (inside locked cells) ─────────────────────────────────── */
+
+.pg-locked-cell-inner {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  padding: 0 var(--sp-2);
+  height: 100%;
+}
+
+.pg-lock-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--pg-locked-text);
+  opacity: 0.7;
+}
+
+/* ── Inline locked message ────────────────────────────────────────────── */
+
+.pg-lock-msg {
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  background: #1a2733;
+  color: #fff;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  z-index: 50;
+  pointer-events: none;
+  box-shadow: var(--shadow-sm);
+  animation: pg-lock-msg-in 120ms ease;
+}
+
+@keyframes pg-lock-msg-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(2px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* ── Loading skeleton ─────────────────────────────────────────────────── */
+
+.pg-skeleton-wrap {
+  padding: var(--sp-4) var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.pg-skeleton-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.pg-skeleton-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pg-skeleton-row {
+  display: flex;
+  gap: 2px;
+}
+
+/* ── Error / empty states ─────────────────────────────────────────────── */
+
+.pg-error,
+.pg-empty {
+  padding: var(--sp-8);
+  text-align: center;
+  font-size: var(--text-base);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 100px;
+}
+
+.pg-error {
+  color: #c0392b;
+}

@@ -111,7 +111,6 @@ function Tooltip({ data }: { data: TooltipData }) {
       className="sg-tooltip"
       style={{ left, top }}
       aria-hidden="true"
-      role="tooltip"
     >
       {/* SKU identity */}
       <div className="sg-tooltip-sku">
@@ -333,7 +332,12 @@ function GridSkeleton() {
 
 const DEFAULT_VIS_COUNT = 12;
 
-export default function SupplyGrid() {
+interface SupplyGridProps {
+  /** Increment to trigger a re-fetch of supply and config data. */
+  dataVersion?: number;
+}
+
+export default function SupplyGrid({ dataVersion = 0 }: SupplyGridProps) {
   const [supply, setSupply] = useState<SupplyCell[] | null>(null);
   const [skus, setSkus] = useState<SKU[] | null>(null);
   const [weeks, setWeeks] = useState<Week[] | null>(null);
@@ -359,7 +363,9 @@ export default function SupplyGrid() {
       .finally(() => {
         setLoading(false);
       });
-  }, []);
+  // dataVersion drives re-fetch; when it increments the supply grid recolours.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataVersion]);
 
   // Visible week window (memoised slice)
   const visibleWeeks = useMemo(() => {

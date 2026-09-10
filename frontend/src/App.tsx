@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import './theme.css';
 import Header from './components/Header';
 import SupplyGrid from './components/SupplyGrid';
+import ProductionGrid from './components/ProductionGrid';
 import { fetchConfig } from './api';
 import type { ConfigResponse } from './api';
 
@@ -121,6 +122,18 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>('production');
   const [retryCount, setRetryCount] = useState(0);
 
+  /**
+   * dataVersion — a monotonically increasing counter shared between
+   * SupplyGrid and ProductionGrid. When ProductionGrid accepts an edit
+   * (or save/discard/reset), it calls bumpDataVersion() which increments
+   * this counter; SupplyGrid includes it in its useEffect deps so it
+   * re-fetches /api/supply and recolours without a full page reload.
+   */
+  const [dataVersion, setDataVersion] = useState(0);
+  const bumpDataVersion = useCallback(() => {
+    setDataVersion((v) => v + 1);
+  }, []);
+
   useEffect(() => {
     setLoading(true);
     setError(null);
@@ -184,15 +197,16 @@ export default function App() {
       >
         {activeTab === 'production' ? (
           <>
-            {/* Supply grid is the hero at the top of the Production Grid tab */}
-            <SupplyGrid />
-            {/* Editable production grid fills this space in a later task */}
-            <div style={{ marginTop: 'var(--sp-6)' }}>
-              <PlaceholderPanel
-                title="Production Grid"
-                desc={activeTabDef.desc}
-              />
-            </div>
+            {/* Hero supply grid — re-fetches when dataVersion increments */}
+            <SupplyGrid dataVersion={dataVersion} />
+
+            {/* Editable production grid — bumps dataVersion on each accepted edit */}
+            <ProductionGrid
+              weeks={config?.weeks ?? []}
+              skus={config?.skus ?? []}
+              dataVersion={dataVersion}
+              onDataChange={bumpDataVersion}
+            />
           </>
         ) : (
           <PlaceholderPanel
