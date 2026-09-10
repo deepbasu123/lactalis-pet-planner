@@ -243,8 +243,12 @@ export default function TrafficLightSummary({ dataVersion }: Props) {
   if (!summary) return null;
 
   const { counts, original_vs_plan } = summary;
-  const total = Object.values(counts).reduce((s, v) => s + v, 0);
-  const changes = computeChanges(original_vs_plan.original, original_vs_plan.working);
+  const total = Object.values(counts ?? {}).reduce((s, v) => s + v, 0);
+  // Guard: original_vs_plan.original/working are required by the backend model but
+  // optional-chain defensively in case the API ever returns an unexpected shape.
+  const safeOriginal: Record<string, number> = original_vs_plan?.original ?? {};
+  const safeWorking: Record<string, number> = original_vs_plan?.working ?? {};
+  const changes = computeChanges(safeOriginal, safeWorking);
 
   // Count how many bands actually changed
   const changedBands = BANDS.filter((b) => changes[b.key] !== 0);
@@ -318,8 +322,8 @@ export default function TrafficLightSummary({ dataVersion }: Props) {
             </thead>
             <tbody>
               {BANDS.map((band) => {
-                const orig = original_vs_plan.original[band.key] ?? 0;
-                const work = original_vs_plan.working[band.key] ?? 0;
+                const orig = safeOriginal[band.key] ?? 0;
+                const work = safeWorking[band.key] ?? 0;
                 const delta = changes[band.key] ?? 0;
                 return (
                   <tr key={band.key}>
@@ -379,14 +383,14 @@ export default function TrafficLightSummary({ dataVersion }: Props) {
                 <td style={{ fontWeight: 700, color: 'var(--text-primary)' }}>Total</td>
                 <td style={{ textAlign: 'right' }}>
                   <span className="ct-num">
-                    {Object.values(original_vs_plan.original)
+                    {Object.values(safeOriginal)
                       .reduce((s, v) => s + v, 0)
                       .toLocaleString('en-AU')}
                   </span>
                 </td>
                 <td style={{ textAlign: 'right' }}>
                   <span className="ct-num">
-                    {Object.values(original_vs_plan.working)
+                    {Object.values(safeWorking)
                       .reduce((s, v) => s + v, 0)
                       .toLocaleString('en-AU')}
                   </span>
@@ -394,8 +398,8 @@ export default function TrafficLightSummary({ dataVersion }: Props) {
                 <td style={{ textAlign: 'right' }}>
                   <ChangeCell
                     delta={
-                      Object.values(original_vs_plan.working).reduce((s, v) => s + v, 0) -
-                      Object.values(original_vs_plan.original).reduce((s, v) => s + v, 0)
+                      Object.values(safeWorking).reduce((s, v) => s + v, 0) -
+                      Object.values(safeOriginal).reduce((s, v) => s + v, 0)
                     }
                   />
                 </td>

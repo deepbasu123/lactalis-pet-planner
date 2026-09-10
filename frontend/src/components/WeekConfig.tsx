@@ -66,7 +66,10 @@ export default function WeekConfig({ weeks: initialWeeks, onDataChange }: Props)
   const savingKeyFor = (weekKey: string, field: string) => `${weekKey}|${field}`;
 
   const startEdit = useCallback((week: Week, field: EditField) => {
-    setEditing({ weekKey: week.week_key, field, raw: String(week[field] ?? '') });
+    // For maintenance_type, default null -> 'None' so the select pre-selects correctly.
+    // For note, default null/undefined -> '' so the text input is blank.
+    const defaultVal = field === 'maintenance_type' ? 'None' : '';
+    setEditing({ weekKey: week.week_key, field, raw: String(week[field] ?? defaultVal) });
     setInlineError(null);
   }, []);
 
@@ -203,7 +206,7 @@ export default function WeekConfig({ weeks: initialWeeks, onDataChange }: Props)
                     className={`ct-cell-editable${editingMaint ? ' ct-cell-editing' : ''}`}
                     onClick={() => !savingMaint && !editingMaint && startEdit(week, 'maintenance_type')}
                     role="gridcell"
-                    aria-label={`Maintenance type ${week.maintenance_type} for ${week.week_key}`}
+                    aria-label={`Maintenance type ${week.maintenance_type ?? 'None'} for ${week.week_key}`}
                   >
                     {savingMaint ? (
                       <span className="ct-spinner" />
@@ -222,9 +225,9 @@ export default function WeekConfig({ weeks: initialWeeks, onDataChange }: Props)
                       </select>
                     ) : (
                       <span
-                        className={`ct-maint ct-maint--${week.maintenance_type.toLowerCase()}`}
+                        className={`ct-maint ct-maint--${(week.maintenance_type ?? 'None').toLowerCase()}`}
                       >
-                        {week.maintenance_type}
+                        {week.maintenance_type ?? 'None'}
                       </span>
                     )}
                   </td>

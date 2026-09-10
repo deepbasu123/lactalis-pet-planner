@@ -55,7 +55,8 @@ export default function SkuPriority({ skus: initialSkus, onDataChange }: Props) 
   const savingKeyFor = (skuCode: string, field: EditField) => `${skuCode}|${field}`;
 
   const startEdit = useCallback((sku: SKU, field: EditField) => {
-    setEditing({ skuCode: sku.sku_code, field, raw: String(sku[field]) });
+    // Guard against null/undefined: String(null) == 'null' which would break the select.
+    setEditing({ skuCode: sku.sku_code, field, raw: String(sku[field] ?? '') });
     setInlineError(null);
   }, []);
 
@@ -221,7 +222,7 @@ export default function SkuPriority({ skus: initialSkus, onDataChange }: Props) 
 
                   {/* Pack size */}
                   <td style={{ textAlign: 'center' }}>
-                    <span className="ct-pack">{sku.pack_size_ml}ml</span>
+                    <span className="ct-pack">{sku.pack_size_ml ?? '?'}ml</span>
                   </td>
 
                   {/* Status — editable select */}
@@ -231,7 +232,7 @@ export default function SkuPriority({ skus: initialSkus, onDataChange }: Props) 
                       !savingStatus && !editingStatus && startEdit(sku, 'status')
                     }
                     role="gridcell"
-                    aria-label={`Status ${sku.status} for ${sku.sku_code}, click to change`}
+                    aria-label={`Status ${sku.status ?? ''} for ${sku.sku_code}, click to change`}
                   >
                     {savingStatus ? (
                       <span className="ct-spinner" />
@@ -251,10 +252,12 @@ export default function SkuPriority({ skus: initialSkus, onDataChange }: Props) 
                     ) : (
                       <span
                         className={`ct-badge ${
-                          sku.status === 'Active' ? 'ct-badge--active' : 'ct-badge--inactive'
+                          (sku.status ?? '').toLowerCase() === 'active'
+                            ? 'ct-badge--active'
+                            : 'ct-badge--inactive'
                         }`}
                       >
-                        {sku.status}
+                        {sku.status ?? ''}
                       </span>
                     )}
                   </td>

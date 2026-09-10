@@ -29,7 +29,8 @@ interface EditState {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fmtParamValue(v: number): string {
+function fmtParamValue(v: number | null | undefined): string {
+  if (v == null || !isFinite(v)) return '—';
   if (v >= 10_000) return v.toLocaleString('en-AU', { maximumFractionDigits: 0 });
   return String(v);
 }
@@ -57,7 +58,10 @@ export default function Parameters({ parameters: initialParams, onDataChange }: 
   }, [editing]);
 
   const startEdit = useCallback((param: Parameter) => {
-    setEditing({ name: param.name, raw: String(param.value) });
+    // Guard: param.value could be null from the backend; String(null) == 'null'
+    // which would pass through parseFloat as NaN and surface a misleading error.
+    const raw = param.value != null && isFinite(param.value) ? String(param.value) : '';
+    setEditing({ name: param.name, raw });
     setInlineError(null);
   }, []);
 
