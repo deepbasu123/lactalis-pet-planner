@@ -320,3 +320,50 @@ export const geniePoll = (
 
 export const recalc = (): Promise<unknown> =>
   jsonPost<unknown>('/api/recalc', {});
+
+// ── GET /api/export/excel, GET /api/export/pdf ───────────────────────────────
+// Both return a binary file (not JSON): a multi-sheet .xlsx workbook and a
+// formatted .pdf report respectively, built from the current session's
+// working plan (including unsaved edits). triggerDownload() fetches the
+// blob, derives the filename from the Content-Disposition header the
+// backend sets (falling back to a fixed name if that header is ever
+// missing), and programmatically clicks a temporary <a> to save it --
+// this keeps error handling (non-2xx, network failure) inside the normal
+// try/catch call sites use for every other api.ts function.
+
+/** Extract the filename="..." token from a Content-Disposition header value. */
+export function filenameFromContentDisposition(
+  header: string | null | undefined,
+  fallback: string,
+): string {
+  if (!header) return fallback;
+  const match = /filename="?([^";]+)"?/i.exec(header);
+  return match?.[1] ?? fallback;
+}
+
+async function triggerDownload(url: string, fallbackFilename: string): Promise<void> {
+  const res = await fetch(url, { credentials: 'same-origin' });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`API ${res.status} ${res.statusText}${body ? ': ' + body : ''}`);
+  }
+  const blob = await res.blob();
+  const filename = filenameFromContentDisposition(
+    res.headers.get('Content-Disposition'),
+    fallbackFilename,
+  );
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(objectUrl);
+}
+
+export const exportExcel = (): Promise<void> =>
+  triggerDownload('/api/export/excel', 'pet_line_planner_export.xlsx');
+
+export const exportPdf = (): Promise<void> =>
+  triggerDownload('/api/export/pdf', 'pet_line_planner_report.pdf');

@@ -640,6 +640,71 @@ def api_put_skus(body: PutSKURequest) -> PutResponse:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/export/excel, GET /api/export/pdf
+#
+# Both build their document from the exact same service-layer computation
+# the read endpoints use (backend.export.gather_export_data), applying the
+# current session overlay -- an export always matches what the caller sees
+# on screen, including unsaved edits.
+#
+# NOTE on cookies: FastAPI only merges the injected `response` parameter's
+# headers into the final response when the endpoint returns a plain value.
+# Here we return our own Response (binary body + custom media type), which
+# FastAPI uses verbatim -- so any Set-Cookie written onto the injected
+# `response` via _get_or_create_sid() must be copied onto it explicitly.
+# ---------------------------------------------------------------------------
+
+def _copy_session_cookie(source: Response, target: Response) -> None:
+    set_cookie = source.headers.get("set-cookie")
+    if set_cookie:
+        target.headers["set-cookie"] = set_cookie
+
+
+@app.get("/api/export/excel")
+def api_export_excel(request: Request, response: Response) -> Response:
+    """Return the full dataset (+ working plan) as a multi-sheet .xlsx file."""
+    from backend import export as export_mod
+
+    sid = _get_or_create_sid(request, response)
+    overlay = _session_overlay(sid)
+    ds = get_dataset()
+
+    content = export_mod.build_excel_export(ds, plan_overlay=overlay)
+    stamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename = f"pet_line_planner_export_{stamp}.xlsx"
+
+    file_response = Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+    _copy_session_cookie(response, file_response)
+    return file_response
+
+
+@app.get("/api/export/pdf")
+def api_export_pdf(request: Request, response: Response) -> Response:
+    """Return the full planning report (+ working plan) as a formatted .pdf file."""
+    from backend import export as export_mod
+
+    sid = _get_or_create_sid(request, response)
+    overlay = _session_overlay(sid)
+    ds = get_dataset()
+
+    content = export_mod.build_pdf_export(ds, plan_overlay=overlay)
+    stamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename = f"pet_line_planner_report_{stamp}.pdf"
+
+    file_response = Response(
+        content=content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+    _copy_session_cookie(response, file_response)
+    return file_response
+
+
+# ---------------------------------------------------------------------------
 # Static frontend (only when built)
 # ---------------------------------------------------------------------------
 

@@ -1,9 +1,116 @@
+import { useRef, useState } from 'react';
 import type { RunMeta } from '../api';
+import { exportExcel, exportPdf } from '../api';
 
 interface HeaderProps {
   runMeta: RunMeta | undefined;
   genieOpen?: boolean;
   onGenieToggle?: () => void;
+}
+
+// ── Export buttons ────────────────────────────────────────────────────────────
+// Self-contained: owns its own busy/error state so Header stays a simple
+// props-in render everywhere else. Exports always reflect the current
+// session's working plan (including unsaved edits), same as the grids.
+
+type ExportKind = 'excel' | 'pdf';
+
+function DownloadIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true" focusable="false">
+      <path
+        d="M6 1v6.5M6 7.5 3.3 4.8M6 7.5l2.7-2.7M2 10h8"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
+function ExportButtons() {
+  const [busy, setBusy] = useState<ExportKind | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const errorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  async function handleExport(kind: ExportKind) {
+    if (busy) return;
+    setBusy(kind);
+    setError(null);
+    try {
+      await (kind === 'excel' ? exportExcel() : exportPdf());
+    } catch (err) {
+      const label = kind === 'excel' ? 'Excel' : 'PDF';
+      setError(err instanceof Error ? err.message : `${label} export failed`);
+      if (errorTimer.current) clearTimeout(errorTimer.current);
+      errorTimer.current = setTimeout(() => setError(null), 6000);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const btnStyle = (kind: ExportKind): React.CSSProperties => ({
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '0 12px',
+    height: 32,
+    background: 'transparent',
+    color: 'var(--lac-blue)',
+    border: '1px solid var(--lac-blue)',
+    borderRadius: 'var(--radius-sm)',
+    fontSize: 'var(--text-sm)',
+    fontWeight: 600,
+    fontFamily: 'var(--font-sans)',
+    cursor: busy ? 'default' : 'pointer',
+    whiteSpace: 'nowrap',
+    letterSpacing: '0.01em',
+    opacity: busy && busy !== kind ? 0.5 : 1,
+    transition: 'background-color var(--ease-base), color var(--ease-base), opacity var(--ease-base)',
+  });
+
+  return (
+    <>
+      <button
+        onClick={() => void handleExport('excel')}
+        disabled={busy !== null}
+        style={btnStyle('excel')}
+        aria-label="Export everything to an Excel workbook"
+        title="Download every table and computed grid as a multi-sheet Excel workbook"
+      >
+        <DownloadIcon />
+        {busy === 'excel' ? 'Exporting…' : 'Export Excel'}
+      </button>
+      <button
+        onClick={() => void handleExport('pdf')}
+        disabled={busy !== null}
+        style={btnStyle('pdf')}
+        aria-label="Export everything as a PDF report"
+        title="Download a formatted PDF report covering the full plan, summary, and capacity checks"
+      >
+        <DownloadIcon />
+        {busy === 'pdf' ? 'Exporting…' : 'Export PDF'}
+      </button>
+      {error && (
+        <span
+          role="alert"
+          title={error}
+          style={{
+            fontSize: 'var(--text-xs)',
+            color: '#c53030',
+            maxWidth: 160,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {error}
+        </span>
+      )}
+    </>
+  );
 }
 
 function LactalisLogo() {
@@ -99,6 +206,10 @@ export default function Header({ runMeta, genieOpen = false, onGenieToggle }: He
             <div style={{ ...styles.skeletonChip, width: 112 }} className="skeleton" />
           </>
         )}
+
+        {/* Export actions -- always available, export the current working plan */}
+        <div style={styles.divider} aria-hidden="true" />
+        <ExportButtons />
 
         {/* Genie toggle -- available at all times, secondary to the grid data */}
         {onGenieToggle && (
