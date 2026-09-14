@@ -247,11 +247,157 @@ class TestBuildPdfExportUnit:
         assert content[:5] == b"%PDF-"
         assert len(content) > 4000
 
-    def test_unsaved_edit_count_note_changes_with_overlay(self, ds):
-        """Not asserting exact PDF text (no parser available) -- just that a
-        non-empty overlay produces a different (larger, since more content is
-        never smaller here) document than an empty overlay, i.e. the overlay
-        argument actually flows into the render rather than being ignored."""
+    def test_overlay_flows_into_render(self, ds):
+        """Coarse smoke check that the overlay argument isn't silently
+        ignored. NOT a precise correctness proof on its own (reportlab embeds
+        a variable document ID, so byte-inequality alone is a weak signal --
+        see TestEditNote below for the precise, deterministic check on the
+        actual text-building logic)."""
         empty = export_mod.build_pdf_export(ds, {})
         edited = export_mod.build_pdf_export(ds, {("61108", "2026-W38"): 0.0})
         assert empty != edited
+
+
+class TestEditNote:
+    """Precise, deterministic unit tests for the pure text-building logic
+    behind the PDF's 'Includes N unsaved session edit(s)' header line --
+    isolated from PDF rendering so it can be tested exactly, not by proxy."""
+
+    def test_zero_edits(self):
+        assert export_mod._edit_note(0) == "Reflects the saved production plan."
+
+    def test_one_edit(self):
+        assert export_mod._edit_note(1) == "Includes 1 unsaved session edit(s)."
+
+    def test_multiple_edits(self):
+        assert export_mod._edit_note(7) == "Includes 7 unsaved session edit(s)."
+
+
+class TestNonFiniteOverlayRobustness:
+    """Regression tests for a bug found in review: a non-finite overlay
+    value (e.g. one that slipped past /api/production/edit's own validation)
+    raised OverflowError inside backend.capacity.week_flags() --
+    `int(total - ceiling)` with total=inf -- deep inside
+    service.build_production(), before either exporter got control back.
+    gather_export_data() now sanitizes the overlay before it reaches the
+    service layer (and the numeric output afterwards, for defense in depth)."""
+
+    @pytest.mark.parametrize("bad_value", [float("inf"), float("-inf"), float("nan")])
+    def test_excel_survives_non_finite_overlay_value(self, ds, bad_value):
+        content = export_mod.build_excel_export(ds, {("61108", "2026-W38"): bad_value})
+        assert content[:4] == b"PK\x03\x04"
+
+    @pytest.mark.parametrize("bad_value", [float("inf"), float("-inf"), float("nan")])
+    def test_pdf_survives_non_finite_overlay_value(self, ds, bad_value):
+        content = export_mod.build_pdf_export(ds, {("61108", "2026-W38"): bad_value})
+        assert content[:5] == b"%PDF-"
+
+    def test_endpoint_survives_non_finite_overlay_value(self):
+        """End-to-end: poison the in-memory session overlay directly (bypassing
+        whatever /api/production/edit itself does with the value) and confirm
+        both export endpoints still return 200 for that session."""
+        from backend.main import _SESSION_OVERLAYS
+
+        client = TestClient(app)
+        client.get("/api/config")  # establishes the session cookie
+        sid = client.cookies.get("pet_session")
+        _SESSION_OVERLAYS[sid] = {("61108", "2026-W38"): float("inf")}
+        try:
+            assert client.get("/api/export/excel").status_code == 200
+            assert client.get("/api/export/pdf").status_code == 200
+        finally:
+            _SESSION_OVERLAYS.pop(sid, None)
+
+    def test_clean_num_defaults_and_passthrough(self):
+        assert export_mod._clean_num(float("inf")) == 0.0
+        assert export_mod._clean_num(float("-inf")) == 0.0
+        assert export_mod._clean_num(float("nan")) == 0.0
+        assert export_mod._clean_num(None) == 0.0
+        assert export_mod._clean_num(42.5) == 42.5
+        assert export_mod._clean_num(float("inf"), default=-1.0) == -1.0
+
+
+class TestExcelFormulaInjection:
+    """Regression tests for a bug found in review: a week note starting with
+    '=', '+', '-', or '@' was written straight through pandas.to_excel(),
+    and openpyxl infers data_type='f' (formula) from a leading '=' -- so
+    "=HYPERLINK(...)" became a *live formula* on open, not literal text.
+    (CSV/Excel formula injection: https://owasp.org/www-community/attacks/CSV_Injection)
+    """
+
+    @pytest.mark.parametrize("payload", [
+        '=HYPERLINK("http://evil.example", "click me")',
+        "+1+1",
+        "-1+1",
+        "@SUM(1,1)",
+    ])
+    def test_formula_trigger_note_is_written_as_plain_text(self, payload):
+        ds = generate()
+        ds["week"] = ds["week"].copy()
+        ds["week"].loc[ds["week"]["week_key"] == "2026-W38", "note"] = payload
+
+        content = export_mod.build_excel_export(ds, {})
+        wb = openpyxl.load_workbook(io.BytesIO(content))
+        ws = wb["Weeks"]
+        note_col = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))].index("note") + 1
+        cell = next(
+            row[note_col - 1] for row in ws.iter_rows(min_row=2)
+            if row[0].value == "2026-W38"
+        )
+        assert cell.data_type == "s", f"expected a plain string cell, got {cell.data_type!r}"
+        assert cell.value == "'" + payload
+
+    def test_ordinary_note_is_unaffected(self):
+        ds = generate()
+        ds["week"] = ds["week"].copy()
+        ds["week"].loc[ds["week"]["week_key"] == "2026-W38", "note"] = "Line stopped 2h for CIP"
+
+        content = export_mod.build_excel_export(ds, {})
+        wb = openpyxl.load_workbook(io.BytesIO(content))
+        ws = wb["Weeks"]
+        note_col = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))].index("note") + 1
+        cell = next(
+            row[note_col - 1] for row in ws.iter_rows(min_row=2)
+            if row[0].value == "2026-W38"
+        )
+        assert cell.value == "Line stopped 2h for CIP"
+
+
+class TestPdfLongNoteRobustness:
+    """Regression test for a bug found in review: an unbounded week note (no
+    length limit on PUT /api/weeks) raised reportlab LayoutError -- a Table
+    can only split BETWEEN rows, not within one cell's content, so tens of
+    thousands of characters in a single narrow column needed more vertical
+    space than any page could offer."""
+
+    def test_pdf_survives_a_very_long_note(self):
+        ds = generate()
+        ds["week"] = ds["week"].copy()
+        ds["week"].loc[ds["week"]["week_key"] == "2026-W38", "note"] = "x" * 100_000
+
+        content = export_mod.build_pdf_export(ds, {})
+        assert content[:5] == b"%PDF-"
+
+    def test_endpoint_survives_a_very_long_note_via_put(self):
+        client = TestClient(app)
+        r_put = client.put(
+            "/api/weeks", json={"week_key": "2026-W38", "note": "y" * 20_000}
+        )
+        assert r_put.status_code == 200
+        try:
+            assert client.get("/api/export/pdf").status_code == 200
+        finally:
+            # Restore a clean note so this test doesn't bleed into others.
+            client.put("/api/weeks", json={"week_key": "2026-W38", "note": ""})
+            from backend.main import refresh_dataset
+            refresh_dataset()
+
+    def test_truncate_for_pdf_is_a_noop_under_the_limit(self):
+        short = "Line stopped 2h for CIP"
+        assert export_mod._truncate_for_pdf(short) == short
+
+    def test_truncate_for_pdf_caps_long_text(self):
+        long_text = "x" * 1000
+        truncated = export_mod._truncate_for_pdf(long_text)
+        assert len(truncated) <= export_mod._MAX_NOTE_CHARS_PDF + 1  # +1 for the ellipsis
+        assert truncated.endswith("\u2026")

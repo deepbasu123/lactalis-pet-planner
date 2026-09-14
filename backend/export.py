@@ -103,6 +103,27 @@ def _clean(v: Any) -> Any:
     return v
 
 
+def _clean_num(v: Any, default: float = 0.0) -> float:
+    """Defensive NaN/inf -> default; numpy scalar -> python scalar.
+
+    Unlike _clean() (which maps to None, matching backend.main's JSON
+    convention), this always returns a plain float so callers can safely
+    round()/format it as a number -- a poisoned overlay value (e.g. a
+    non-finite qty that slipped past /api/production/edit) must degrade to
+    a sane number rather than blow up round()/f"{v:,.0f}" deep inside a
+    workbook or PDF build.
+    """
+    if hasattr(v, "item"):
+        v = v.item()
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return default
+    if math.isnan(v) or math.isinf(v):
+        return default
+    return v
+
+
 def _week_short(week_key: str) -> str:
     """'2026-W35' -> 'W35'; falls back to the raw key if the shape is unexpected."""
     if "-W" in week_key:
@@ -114,13 +135,121 @@ def _sku_order(sku_df: pd.DataFrame) -> list[str]:
     return list(sku_df.sort_values("priority")["sku_code"])
 
 
+# Columns in the raw supply_df that hold quantities (vs. keys/labels/small ints).
+_SUPPLY_NUMERIC_COLS = ("opening", "recv", "prod", "demand", "raw", "close", "display_value")
+
+
+def _sanitize_supply_df(supply_df: pd.DataFrame) -> pd.DataFrame:
+    """Scrub NaN/inf out of every quantity column of the raw supply_df.
+
+    A stray non-finite value (e.g. from a poisoned session overlay) must
+    not reach round()/number-format calls downstream in either exporter.
+    """
+    df = supply_df.copy()
+    for col in _SUPPLY_NUMERIC_COLS:
+        if col in df.columns:
+            df[col] = df[col].map(_clean_num)
+    return df
+
+
+def _sanitize_prod(prod: dict) -> dict:
+    """Scrub NaN/inf out of build_production()'s totals, rows, and flags."""
+    return {
+        "rows": [
+            {**r, "planned_qty": _clean_num(r.get("planned_qty"))}
+            for r in prod["rows"]
+        ],
+        "week_totals": {k: _clean_num(v) for k, v in prod["week_totals"].items()},
+        "week_flags": {
+            wk: {**flags, "over": _clean_num(flags.get("over", 0))}
+            for wk, flags in prod["week_flags"].items()
+        },
+        "changeovers": prod["changeovers"],
+    }
+
+
+def _sanitize_overlay(plan_overlay: dict) -> dict:
+    """Scrub NaN/inf out of overlay quantities before they reach the service layer.
+
+    A non-finite qty (e.g. one that slipped past /api/production/edit's own
+    validation into the session overlay) reaches backend.capacity.week_flags()
+    as `total - ceiling`, and `int(inf)` raises OverflowError there -- inside
+    service.build_production(), before either exporter gets a result back to
+    sanitize. Cleaning the overlay itself, upfront, is the one place that
+    protects every downstream computation (build_supply AND build_production
+    both consume this same overlay).
+    """
+    return {key: _clean_num(v) for key, v in plan_overlay.items()}
+
+
 def gather_export_data(dataset: dict, plan_overlay: dict | None = None) -> dict[str, Any]:
-    """Run the service layer once; return everything both exporters need."""
-    plan_overlay = plan_overlay or {}
+    """Run the service layer once; return everything both exporters need.
+
+    Both the overlay going in and the numeric output coming out are
+    sanitized (NaN/inf -> 0.0), so a poisoned overlay value can never
+    reach a round()/number-format call -- or crash the service layer
+    itself -- inside either builder.
+    """
+    plan_overlay = _sanitize_overlay(plan_overlay or {})
     supply_df = service.build_supply(dataset, plan_overlay=plan_overlay)
     prod = service.build_production(dataset, plan_overlay=plan_overlay)
     summ = service.summary(supply_df, dataset, plan_overlay=plan_overlay)
-    return {"supply_df": supply_df, "prod": prod, "summ": summ}
+    return {
+        "supply_df": _sanitize_supply_df(supply_df),
+        "prod": _sanitize_prod(prod),
+        "summ": summ,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Free-text safety (the week `note` field is the one fully user-controlled
+# string in this dataset -- everything else comes from the fixed SKU/param
+# tables or system-generated labels).
+# ---------------------------------------------------------------------------
+
+# Leading characters Excel/Sheets/LibreOffice treat as a formula trigger.
+# https://owasp.org/www-community/attacks/CSV_Injection
+_FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+# Firm cap on free text rendered into a PDF table cell. reportlab's Table
+# can only split BETWEEN rows, not within a single cell's content, so an
+# unbounded note (nothing stops a user typing tens of thousands of
+# characters into PUT /api/weeks {"note": ...}) can require more vertical
+# space than any page offers and raise a LayoutError. Excel has no such
+# limit -- long notes there just widen/wrap the cell, so this only applies
+# to the PDF path.
+_MAX_NOTE_CHARS_PDF = 400
+
+
+def _excel_safe(v: Any) -> Any:
+    """Neutralise a leading formula-trigger character on string cells.
+
+    openpyxl infers data_type='f' (formula) from a value starting with
+    '=' and Excel/Sheets/LibreOffice apply the same rule on open --
+    without this, a week note like "=HYPERLINK(...)" becomes a live
+    formula instead of literal text. Prefixing with a bare quote is the
+    standard CSV/Excel-injection mitigation (matches what Excel itself
+    does when a user types a leading apostrophe to force text).
+    """
+    if isinstance(v, str) and v.startswith(_FORMULA_TRIGGER_CHARS):
+        return "'" + v
+    return v
+
+
+def _truncate_for_pdf(text: str, limit: int = _MAX_NOTE_CHARS_PDF) -> str:
+    """Cap free text before it goes into a PDF Table cell (see _MAX_NOTE_CHARS_PDF)."""
+    if len(text) > limit:
+        return text[:limit].rstrip() + "\u2026"
+    return text
+
+
+def _edit_note(n_edits: int) -> str:
+    """Pure text-building for the export header note -- kept separate from
+    PDF rendering so it can be unit-tested directly instead of via a fragile
+    'the rendered bytes changed' proxy assertion."""
+    if n_edits:
+        return f"Includes {n_edits} unsaved session edit(s)."
+    return "Reflects the saved production plan."
 
 
 # ===========================================================================
@@ -160,6 +289,10 @@ def _apply_number_formats(ws: Worksheet, df: pd.DataFrame, start_row: int = 2) -
 
 
 def _write_flat_sheet(writer: pd.ExcelWriter, sheet_name: str, df: pd.DataFrame) -> Worksheet:
+    df = df.copy()
+    for col in df.columns:
+        if df[col].dtype == object:
+            df[col] = df[col].map(_excel_safe)
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     ws = writer.sheets[sheet_name]
     _style_header_row(ws, len(df.columns))
@@ -579,7 +712,10 @@ def _week_table(week_df: pd.DataFrame, usable_width: float):
         rows.append([
             _week_short(r["week_key"]), wc_str, str(r["maintenance_type"]),
             "Yes" if bool(r["is_locked"]) else "No",
-            _p(r["note"] or "", note_style),  # free-text field -- wrap + XML-escape
+            # Free-text field: truncate (a Table row can't split within one
+            # cell, so an unbounded note can outgrow every page -- see
+            # _MAX_NOTE_CHARS_PDF) then wrap + XML-escape.
+            _p(_truncate_for_pdf(str(r["note"] or "")), note_style),
         ])
     col_widths = [usable_width * w for w in (0.09, 0.16, 0.16, 0.09, 0.50)]
     return _styled_table(rows, col_widths=col_widths, font_size=7.5)
@@ -678,11 +814,7 @@ def build_pdf_export(dataset: dict, plan_overlay: dict | None = None) -> bytes:
     )
 
     generated_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    n_edits = len(plan_overlay)
-    edit_note = (
-        f"Includes {n_edits} unsaved session edit(s)." if n_edits
-        else "Reflects the saved production plan."
-    )
+    edit_note = _edit_note(len(plan_overlay))
     total_production = float(sum(prod["week_totals"].values()))
 
     story = [
