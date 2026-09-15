@@ -6,7 +6,10 @@ Steps (in order, each logged):
   1. Build the React frontend (npm ci && npm run build in frontend/).
   2. Create schema <catalog>.<schema> (from --catalog / --schema).
   3. CREATE OR REPLACE the 7 Delta tables with correct schemas.
-  4. Load synthetic data: TRUNCATE + INSERT from data_gen.generate().
+  4. Load data: TRUNCATE + INSERT from data_gen.generate() (synthetic, the
+     default) OR backend.excel_source.load_dataset() when --data-file is
+     given (a real "PET Traffic Lights" workbook -- see that module's
+     docstring for the expected shape).
   5. Compute projection_snapshot via service.build_supply() and load it.
   6. Ensure Genie space (create or reuse by title).
   7. Write resolved app.yaml with real warehouse_id and genie_space_id.
@@ -19,6 +22,7 @@ Steps (in order, each logged):
 Usage:
   python deploy.py --profile <cli-profile> --catalog <uc-catalog>
                    [--schema <schema>] [--app-name <name>] [--warehouse-id <id>]
+                   [--data-file <path-to-real-workbook.xlsx>]
 
 Re-runnable: schema uses IF NOT EXISTS; tables use CREATE OR REPLACE; data uses
 reuse.  Running deploy.py a second time overwrites the data and re-deploys
@@ -324,13 +328,13 @@ def step_create_tables(w, warehouse_id: str) -> None:
 
 
 def step_load_data(w, warehouse_id: str, ds: dict) -> None:
-    """Step 4: Load synthetic data.
+    """Step 4: Load data (synthetic or real -- caller decides which via --data-file).
 
-    Accepts the pre-generated dataset (caller generates once, shared with
-    step_load_snapshot to avoid running data_gen.generate() twice).
+    Accepts the pre-built dataset (caller builds it once, shared with
+    step_load_snapshot to avoid re-generating/re-parsing it twice).
     Each of the 6 base tables is TRUNCATED then re-inserted.
     """
-    log.info("[4/11] Loading synthetic data...")
+    log.info("[4/11] Loading data...")
     base_tables = ["sku", "week", "parameter", "demand", "plan_line", "opening_stock"]
     for name in base_tables:
         fqn = f"{CATALOG}.{SCHEMA}.{name}"
@@ -780,6 +784,17 @@ def main() -> None:
         action="store_true",
         help="Skip npm ci && npm run build (use existing frontend/dist).",
     )
+    parser.add_argument(
+        "--data-file",
+        default=None,
+        help=(
+            "Path to a real 'PET Traffic Lights' workbook to load instead of the "
+            "built-in synthetic demo dataset. See backend/excel_source.py for the "
+            "expected sheet/column shape. The file itself is read locally at "
+            "deploy time and is never uploaded or committed anywhere -- only the "
+            "parsed table data is written to Unity Catalog."
+        ),
+    )
     args = parser.parse_args()
 
     # Thread the CLI targets through the module globals the helpers read.
@@ -814,10 +829,16 @@ def main() -> None:
     # Steps 2-5: schema, tables, data, snapshot
     step_create_schema(w, warehouse_id)
     step_create_tables(w, warehouse_id)
-    # Generate the synthetic dataset once; pass the same dict to both steps
-    # so data_gen.generate() runs only once per deploy.
-    log.info("Generating synthetic dataset (seed=42)...")
-    ds = generate(seed=42)
+    # Build the dataset once; pass the same dict to both steps so it is only
+    # generated/parsed a single time per deploy.
+    if args.data_file:
+        from backend.excel_source import load_dataset
+
+        log.info("Loading real dataset from %s ...", args.data_file)
+        ds = load_dataset(args.data_file)
+    else:
+        log.info("Generating synthetic dataset (seed=42)...")
+        ds = generate(seed=42)
     step_load_data(w, warehouse_id, ds)
     step_load_snapshot(w, warehouse_id, ds)
 

@@ -7,3 +7,11 @@ frontend/dist/
 .env
 .DS_Store
 .pytest_cache/
+.databricks/
+
+# Real operational workbooks (e.g. "PET Traffic Lights *.xlsx") are loaded
+# locally by --data-file at deploy time and must never be committed -- only
+# the resulting Unity Catalog tables (access-controlled separately) hold
+# the real numbers. See backend/excel_source.py.
+*.xlsx
+*.xls

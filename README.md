@@ -95,7 +95,24 @@ Other options:
 ```bash
 python deploy.py --profile <p> --catalog <c> --warehouse-id <id>   # pin a warehouse
 python deploy.py --profile <p> --catalog <c> --skip-frontend-build # reuse frontend/dist
+python deploy.py --profile <p> --catalog <c> --data-file <path.xlsx> # load real data instead of the synthetic demo
 ```
+
+### Loading real data instead of the synthetic demo
+
+By default `deploy.py` loads the built-in synthetic dataset. To load real
+operational data instead, pass `--data-file` pointing at a local
+"PET Traffic Lights" workbook (the weekly SNP/APO export + production plan
+this app is modelled on). `backend/excel_source.py` parses it into the same
+six tables the synthetic generator produces -- see that module's docstring
+for the exact sheet/column shape it expects, and what it does when a value
+is missing (real files aren't always complete: shelf-life/MLOR gaps are
+imputed from the closest analogous SKU in the same file, and blank
+production cells load as 0, not a guess).
+
+The workbook itself is read locally and is **never** uploaded, copied into
+the repo, or committed -- only the parsed table data reaches Unity Catalog.
+`*.xlsx` is gitignored for exactly this reason.
 
 The script is fully idempotent: running it again overwrites the data and re-deploys the app without duplicating resources. When it finishes it prints the app URL.
 
