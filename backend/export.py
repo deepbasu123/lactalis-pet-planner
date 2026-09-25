@@ -32,7 +32,8 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from backend import service
+# The rule engine now lives in SQL (medallion.gold_sql); the export builders
+# receive the already-computed Gold grids from the API layer.
 
 # ---------------------------------------------------------------------------
 # Shared colour palette (mirrors frontend/src/colours.ts and TrafficLightSummary)
@@ -182,18 +183,13 @@ def _sanitize_overlay(plan_overlay: dict) -> dict:
     return {key: _clean_num(v) for key, v in plan_overlay.items()}
 
 
-def gather_export_data(dataset: dict, plan_overlay: dict | None = None) -> dict[str, Any]:
-    """Run the service layer once; return everything both exporters need.
+def gather_export_data(dataset: dict, supply_df, prod: dict, summ: dict) -> dict[str, Any]:
+    """Package the Gold grids (computed by the SQL engine, fetched by the API
+    layer) that both exporters need.
 
-    Both the overlay going in and the numeric output coming out are
-    sanitized (NaN/inf -> 0.0), so a poisoned overlay value can never
-    reach a round()/number-format call -- or crash the service layer
-    itself -- inside either builder.
+    The numeric output is sanitized (NaN/inf -> 0.0) so a poisoned value can
+    never reach a round()/number-format call inside either builder.
     """
-    plan_overlay = _sanitize_overlay(plan_overlay or {})
-    supply_df = service.build_supply(dataset, plan_overlay=plan_overlay)
-    prod = service.build_production(dataset, plan_overlay=plan_overlay)
-    summ = service.summary(supply_df, dataset, plan_overlay=plan_overlay)
     return {
         "supply_df": _sanitize_supply_df(supply_df),
         "prod": _sanitize_prod(prod),
@@ -548,14 +544,13 @@ def _write_summary_sheet(writer: pd.ExcelWriter, summ: dict) -> None:
         cell.fill = fill
 
 
-def build_excel_export(dataset: dict, plan_overlay: dict | None = None) -> bytes:
+def build_excel_export(dataset: dict, supply_df, prod: dict, summ: dict) -> bytes:
     """Build the full multi-sheet Excel workbook and return it as bytes.
 
     Sheets: Overview, Parameters, SKUs, Weeks, Summary, Capacity Flags,
     Supply Grid, Supply Colour Map, Production Plan, Production Qty Map.
     """
-    plan_overlay = plan_overlay or {}
-    data = gather_export_data(dataset, plan_overlay)
+    data = gather_export_data(dataset, supply_df, prod, summ)
     supply_df, prod, summ = data["supply_df"], data["prod"], data["summ"]
 
     sku_df = dataset["sku"].sort_values("priority").reset_index(drop=True)
@@ -564,7 +559,7 @@ def build_excel_export(dataset: dict, plan_overlay: dict | None = None) -> bytes
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        _write_overview_sheet(writer, dataset, prod, plan_overlay)
+        _write_overview_sheet(writer, dataset, prod, {})
         _write_flat_sheet(writer, "Parameters", param_df)
         _write_flat_sheet(writer, "SKUs", sku_df)
         _write_flat_sheet(writer, "Weeks", week_df)
@@ -766,7 +761,7 @@ def _colour_legend_table(usable_width: float):
     return _styled_table(rows, col_widths=col_widths, font_size=8, cell_styles=cmds)
 
 
-def build_pdf_export(dataset: dict, plan_overlay: dict | None = None) -> bytes:
+def build_pdf_export(dataset: dict, supply_df, prod: dict, summ: dict) -> bytes:
     """Build the formatted PDF planning report and return it as bytes.
 
     Sections: overview, parameters, traffic-light distribution, capacity
@@ -778,8 +773,7 @@ def build_pdf_export(dataset: dict, plan_overlay: dict | None = None) -> bytes:
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
-    plan_overlay = plan_overlay or {}
-    data = gather_export_data(dataset, plan_overlay)
+    data = gather_export_data(dataset, supply_df, prod, summ)
     supply_df, prod, summ = data["supply_df"], data["prod"], data["summ"]
 
     sku_df = dataset["sku"]
@@ -814,7 +808,7 @@ def build_pdf_export(dataset: dict, plan_overlay: dict | None = None) -> bytes:
     )
 
     generated_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    edit_note = _edit_note(len(plan_overlay))
+    edit_note = _edit_note(0)
     total_production = float(sum(prod["week_totals"].values()))
 
     story = [

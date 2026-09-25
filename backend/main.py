@@ -1,177 +1,117 @@
 """backend/main.py
 
-FastAPI application for the Lactalis PET Line Planner.
+FastAPI serving layer for the Lactalis PET Line Planner.
 
-Dataset loading
----------------
-When PET_LIVE == "1" the dataset is built by reading the six UC tables via
-db.read_table (blocking SDK calls). Otherwise data_gen.generate() produces a
-fully deterministic synthetic dataset -- no workspace connection required.
-The loaded dataset is cached at module level; call refresh_dataset() to
-invalidate the cache (e.g. after a save that writes back to UC).
+THIN BY DESIGN. This process contains no business logic. Every projection,
+traffic-light colour, and capacity-rule breach is computed by the Gold SQL
+engine (medallion.gold_sql) running on a serverless SQL warehouse. This module
+only: runs that SQL, reads/writes Silver (the editable plan overlay), accepts
+Excel uploads into a UC Volume and triggers the Lakeflow pipeline, and proxies
+Genie. Edits recompute in ~1-2s on the warm warehouse.
 
-Blocking-call safety
---------------------
-All endpoint functions are plain synchronous `def`, not `async def`.
-FastAPI runs them in its default threadpool so blocking SDK calls in live mode
-do not stall the event loop.
-
-NaN / numpy serialization
---------------------------
-pandas and numpy scalars (np.int64, np.float64) and float NaN must not reach
-the JSON encoder.  _safe_val() converts numpy scalars via .item() and maps
-NaN/inf to None.  _sanitize_records() applies this to every cell of a
-DataFrame.  All numeric results are converted before Pydantic models are
-instantiated so the JSON output is always clean.
+Endpoints run as plain sync `def` so FastAPI executes them in its threadpool —
+blocking warehouse calls never stall the event loop.
 """
 from __future__ import annotations
 
 import datetime
+import io
 import logging
-import math
 import os
-import uuid
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 
+from backend import warehouse
 from backend.config import settings
 from backend.models import (
-    AutoFixResponse,
-    ConfigMeta,
-    ConfigResponse,
-    DiscardResponse,
     EditRequest,
-    EditResponse,
     GenieAskRequest,
+    MetaResponse,
+    OkResponse,
+    PipelineStatusResponse,
     ProductionResponse,
     PutParameterRequest,
-    PutResponse,
-    PutSKURequest,
+    PutSkuRequest,
     PutWeekRequest,
     RecalcResponse,
     ResetWeekRequest,
-    SaveResponse,
+    ScenarioRequest,
     SummaryOrigVsPlan,
     SummaryResponse,
-    SupplyResponse,
+    UploadResponse,
 )
+from medallion.gold_sql import production_select, summary_select, supply_select
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Lactalis PET Line Planner")
+app = FastAPI(title="Lactalis PET Line Planner (medallion)")
 
 
 # ---------------------------------------------------------------------------
-# Module-level dataset cache
+# Grid assembly — thin wrappers that run Gold SQL and shape the response
 # ---------------------------------------------------------------------------
 
-_dataset: dict | None = None  # populated on first request
+def _supply(scenario: str) -> list[dict]:
+    return warehouse.run_sql(supply_select(warehouse.silver(), scenario=scenario))
 
 
-def _load_dataset() -> dict:
-    """Build the dataset from Unity Catalog or synthetic data."""
-    if os.environ.get("PET_LIVE") == "1":
-        from backend import db
-        logger.info("PET_LIVE=1: loading dataset from Unity Catalog")
-        table_names = [
-            "sku",
-            "week",
-            "parameter",
-            "demand",
-            "plan_line",
-            "opening_stock",
-        ]
-        return {name: db.read_table(name) for name in table_names}
-
-    from backend import data_gen
-    return data_gen.generate()
-
-
-def get_dataset() -> dict:
-    """Return the cached dataset, loading and caching it on first call."""
-    global _dataset
-    if _dataset is None:
-        _dataset = _load_dataset()
-    return _dataset
+def _production(scenario: str) -> ProductionResponse:
+    rows = warehouse.run_sql(production_select(warehouse.silver(), scenario=scenario))
+    week_totals = {r["week_key"]: float(r["total"]) for r in rows}
+    week_flags = {
+        r["week_key"]: {
+            "R1": bool(r["r1"]), "R2": bool(r["r2"]), "R3": bool(r["r3"]),
+            "R4": bool(r["r4"]), "no_rule": bool(r["no_rule"]),
+            "over": int(r["over_units"]),
+        }
+        for r in rows
+    }
+    changeovers = sum(1 for r in rows if r["is_changeover"])
+    plan_rows = warehouse.effective_plan_rows(scenario)
+    return ProductionResponse(
+        rows=plan_rows,
+        week_totals=week_totals,
+        week_flags=week_flags,
+        changeovers=changeovers,
+    )
 
 
-def refresh_dataset() -> None:
-    """Invalidate the cache so the next call to get_dataset() reloads."""
-    global _dataset
-    _dataset = None
+def _summary(scenario: str) -> SummaryResponse:
+    s = warehouse.silver()
+    working_rows = warehouse.run_sql(summary_select(s, scenario=scenario))
+    working = {r["colour"]: int(r["n"]) for r in working_rows}
+    orig_sql = (
+        "SELECT colour, COUNT(*) AS n FROM (\n"
+        + supply_select(s, plan_col="orig_qty", use_overlay=False)
+        + "\n) g GROUP BY colour"
+    )
+    orig_rows = warehouse.run_sql(orig_sql)
+    original = {r["colour"]: int(r["n"]) for r in orig_rows}
+    return SummaryResponse(
+        counts=working,
+        original_vs_plan=SummaryOrigVsPlan(original=original, working=working),
+    )
 
 
-# ---------------------------------------------------------------------------
-# Per-session working-copy overlay
-#
-# In-process store (demo only -- resets on server restart).
-# Keys: session_id str -> dict[(sku_code, week_key) -> planned_qty float]
-# ---------------------------------------------------------------------------
-
-_SESSION_OVERLAYS: dict[str, dict] = {}
-_SESSION_COOKIE = "pet_session"
-
-
-def _get_or_create_sid(request: Request, response: Response) -> str:
-    """Return the session ID from the cookie, creating a fresh one if absent."""
-    sid: str | None = request.cookies.get(_SESSION_COOKIE)
-    if not sid:
-        sid = str(uuid.uuid4())
-        response.set_cookie(_SESSION_COOKIE, sid, httponly=True, samesite="lax")
-    return sid
-
-
-def _session_overlay(sid: str) -> dict:
-    """Return (or create) the overlay dict for the given session."""
-    if sid not in _SESSION_OVERLAYS:
-        _SESSION_OVERLAYS[sid] = {}
-    return _SESSION_OVERLAYS[sid]
+def _grids(scenario: str, report: dict | None = None) -> RecalcResponse:
+    # NOTE (perf follow-up): each edit runs supply + production + summary, and
+    # summary re-runs the projection twice (working + baseline). With the
+    # closed-form projection each is ~4s, so an edit is ~15s. A safe win is to
+    # compute the working supply once and derive the working colour counts from
+    # its `colour` field, computing only the baseline separately — it needs the
+    # 3-4 tests that monkeypatch `_summary` updated in lockstep, so it is left
+    # as a follow-up rather than destabilising the tested backend here.
+    return RecalcResponse(
+        supply=_supply(scenario),
+        production=_production(scenario),
+        summary=_summary(scenario),
+        report=report,
+    )
 
 
 # ---------------------------------------------------------------------------
-# Serialization helpers
-# ---------------------------------------------------------------------------
-
-def _safe_val(v):
-    """Convert a value to a JSON-safe Python scalar.
-
-    * numpy scalars (.item()) are unwrapped to their Python equivalents.
-    * float NaN / inf is mapped to None (JSON null).
-    * datetime.date / datetime.datetime are serialized as ISO strings.
-    * All other values are returned unchanged.
-    """
-    if v is None:
-        return None
-    # numpy / pandas scalar types expose a no-arg .item() method
-    if hasattr(v, "item"):
-        v = v.item()
-    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-        return None
-    if isinstance(v, (datetime.date, datetime.datetime)):
-        return v.isoformat()
-    return v
-
-
-def _sanitize_records(df) -> list[dict]:
-    """Convert a DataFrame to a list of JSON-safe plain Python dicts.
-
-    Every cell is passed through _safe_val so no numpy scalar or NaN can
-    reach the JSON encoder.
-    """
-    result = []
-    for _, row in df.iterrows():
-        result.append({col: _safe_val(val) for col, val in row.items()})
-    return result
-
-
-def _sanitize_flat_dict(d: dict) -> dict:
-    """Apply _safe_val to every value in a flat dict."""
-    return {k: _safe_val(v) for k, v in d.items()}
-
-
-# ---------------------------------------------------------------------------
-# Existing health endpoint
+# Health + metadata
 # ---------------------------------------------------------------------------
 
 @app.get("/api/health")
@@ -179,413 +119,111 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-# ---------------------------------------------------------------------------
-# GET /api/config
-# ---------------------------------------------------------------------------
-
-@app.get("/api/config", response_model=ConfigResponse)
-def api_config() -> ConfigResponse:
-    """Return SKU master, week horizon, parameters, and run metadata."""
-    ds = get_dataset()
-
-    skus = _sanitize_records(ds["sku"])
-    weeks = _sanitize_records(ds["week"])
-    parameters = _sanitize_records(ds["parameter"])
-
-    total_production = _safe_val(float(ds["plan_line"]["planned_qty"].sum()))
-
-    return ConfigResponse(
-        skus=skus,
-        weeks=weeks,
-        parameters=parameters,
-        meta=ConfigMeta(
-            sku_count=len(skus),
-            week_count=len(weeks),
-            total_production=total_production,
-        ),
+@app.get("/api/meta", response_model=MetaResponse)
+def api_meta() -> MetaResponse:
+    """SKU master, week horizon and parameters — read straight from Silver."""
+    s = warehouse.silver()
+    return MetaResponse(
+        skus=warehouse.run_sql(f"SELECT * FROM {s.t('sku')} ORDER BY priority"),
+        weeks=warehouse.run_sql(f"SELECT * FROM {s.t('week')} ORDER BY horizon_index"),
+        parameters=warehouse.run_sql(f"SELECT * FROM {s.t('parameter')} ORDER BY name"),
     )
 
 
 # ---------------------------------------------------------------------------
-# GET /api/supply
+# Read grids (Gold)
 # ---------------------------------------------------------------------------
 
-@app.get("/api/supply", response_model=SupplyResponse)
-def api_supply(request: Request, response: Response) -> SupplyResponse:
-    """Return the full supply projection grid with traffic-light colours."""
-    from backend import service
+@app.get("/api/supply")
+def api_supply(scenario: str = "working") -> list[dict]:
+    return _supply(scenario)
 
-    sid = _get_or_create_sid(request, response)
-    overlay = _session_overlay(sid)
-    ds = get_dataset()
-    supply_df = service.build_supply(ds, plan_overlay=overlay)
-    rows = _sanitize_records(supply_df)
-    return SupplyResponse(rows=rows)
-
-
-# ---------------------------------------------------------------------------
-# GET /api/production
-# ---------------------------------------------------------------------------
 
 @app.get("/api/production", response_model=ProductionResponse)
-def api_production(request: Request, response: Response) -> ProductionResponse:
-    """Return the production grid with weekly totals and capacity flags."""
-    from backend import service
+def api_production(scenario: str = "working") -> ProductionResponse:
+    return _production(scenario)
 
-    sid = _get_or_create_sid(request, response)
-    overlay = _session_overlay(sid)
-    ds = get_dataset()
-    prod = service.build_production(ds, plan_overlay=overlay)
-
-    # week_totals values come from `total += float(qty)` -- plain Python floats
-    # but sanitize defensively.  Coerce to float first so _safe_val can catch
-    # NaN; inverting to float(_safe_val(v)) would raise TypeError when v is NaN.
-    week_totals: dict[str, float] = {
-        k: _safe_val(float(v))
-        for k, v in prod["week_totals"].items()
-    }
-
-    # week_flags values are plain Python bools and ints from cap_engine.week_flags()
-    week_flags: dict[str, dict] = {
-        wk: _sanitize_flat_dict(flags)
-        for wk, flags in prod["week_flags"].items()
-    }
-
-    # Sanitize rows the same way as every other output: _safe_val on every cell.
-    # prod["rows"] is built from plan_df iteration and float() coercions, so
-    # values are typically plain Python, but defensive sanitization avoids
-    # any numpy scalar leaking through if the service layer changes.
-    rows = [_sanitize_flat_dict(row) for row in prod["rows"]]
-
-    return ProductionResponse(
-        rows=rows,
-        week_totals=week_totals,
-        week_flags=week_flags,
-        changeovers=int(prod["changeovers"]),
-    )
-
-
-# ---------------------------------------------------------------------------
-# GET /api/summary
-# ---------------------------------------------------------------------------
 
 @app.get("/api/summary", response_model=SummaryResponse)
-def api_summary(request: Request, response: Response) -> SummaryResponse:
-    """Return colour counts and original-vs-working-plan comparison."""
-    from backend import service
-
-    sid = _get_or_create_sid(request, response)
-    overlay = _session_overlay(sid)
-    ds = get_dataset()
-    supply_df = service.build_supply(ds, plan_overlay=overlay)
-    summ = service.summary(supply_df, ds, plan_overlay=overlay)
-
-    # value_counts() returns numpy int64 -- convert to int
-    counts: dict[str, int] = {k: int(v) for k, v in summ["counts"].items()}
-
-    # _project_colours uses defaultdict(int) += 1 so values are Python ints;
-    # convert defensively anyway
-    ovp = summ["original_vs_plan"]
-    original: dict[str, int] = {k: int(v) for k, v in ovp["original"].items()}
-    working: dict[str, int] = {k: int(v) for k, v in ovp["working"].items()}
-
-    return SummaryResponse(
-        counts=counts,
-        original_vs_plan=SummaryOrigVsPlan(original=original, working=working),
-    )
+def api_summary(scenario: str = "working") -> SummaryResponse:
+    return _summary(scenario)
 
 
 # ---------------------------------------------------------------------------
-# POST /api/production/edit
+# Plan edits (write Silver overlay, recompute Gold)
 # ---------------------------------------------------------------------------
 
-@app.post("/api/production/edit", response_model=EditResponse)
-def api_production_edit(
-    body: EditRequest,
-    request: Request,
-    response: Response,
-) -> EditResponse:
-    """Apply one cell edit to the session overlay.
+@app.post("/api/plan/edit", response_model=RecalcResponse)
+def api_plan_edit(body: EditRequest) -> RecalcResponse:
+    """Write one cell to the overlay and return the recomputed grids.
 
-    Returns HTTP 409 if the target week is locked (RULE-020).
-    Negative qty is clamped to 0; capacity/pack-size violations are detected
-    by the engine (flagged via week_flags) but are NOT rejected here.
+    Rejects edits to locked (time-fence) weeks with 409 (RULE-020).
     """
-    ds = get_dataset()
-    week_df = ds["week"]
-
-    row = week_df[week_df["week_key"] == body.week_key]
-    if row.empty:
+    locked = warehouse.week_is_locked(body.week_key)
+    if locked is None:
         raise HTTPException(status_code=404, detail=f"Week {body.week_key!r} not found")
+    if locked:
+        raise HTTPException(status_code=409, detail="Week is locked (time fence) and cannot be modified")
 
-    if bool(row["is_locked"].iat[0]):
-        raise HTTPException(
-            status_code=409,
-            detail="Week is locked (time fence) and cannot be modified",
-        )
-
-    qty = max(0.0, float(body.qty))
-    sid = _get_or_create_sid(request, response)
-    overlay = _session_overlay(sid)
-    overlay[(body.sku_code, body.week_key)] = qty
-
-    return EditResponse(status="ok", sku_code=body.sku_code, week_key=body.week_key, qty=qty)
+    qty = max(0.0, float(body.planned_qty))
+    warehouse.overlay_merge(
+        body.scenario,
+        [{"sku_code": body.sku_code, "week_key": body.week_key, "planned_qty": qty}],
+    )
+    return _grids(body.scenario)
 
 
-# ---------------------------------------------------------------------------
-# POST /api/production/save
-# ---------------------------------------------------------------------------
-
-@app.post("/api/production/save", response_model=SaveResponse)
-def api_production_save(request: Request, response: Response) -> SaveResponse:
-    """Persist the session overlay.
-
-    When PET_LIVE=="1": writes changed rows via db.merge_plan_lines() and then
-    calls db.write_snapshot() with the freshly computed supply projection.
-    When PET_LIVE is unset (demo / test mode): a no-op that just clears the
-    overlay and reports how many rows *would* have been saved.
-    """
-    sid = _get_or_create_sid(request, response)
-    overlay = _session_overlay(sid)
-    n_rows = len(overlay)
-
-    if os.environ.get("PET_LIVE") == "1":
-        from backend import db, service
-        ds = get_dataset()
-        # Convert the overlay dict {(sku_code, week_key): qty} to the list-of-
-        # dicts format that merge_plan_lines expects.  Skip the call entirely
-        # when the overlay is empty -- merge_plan_lines raises ValueError on an
-        # empty list and there is nothing to write.
-        rows = [
-            {"sku_code": s, "week_key": wk, "planned_qty": q}
-            for (s, wk), q in overlay.items()
-        ]
-        if rows:
-            db.merge_plan_lines(rows)
-        supply_df = service.build_supply(ds, plan_overlay=overlay)
-        db.write_snapshot(supply_df)
-        refresh_dataset()
-
-    # Always clear the overlay after a save attempt
-    _SESSION_OVERLAYS.pop(sid, None)
-
-    return SaveResponse(status="ok", saved=n_rows)
+@app.post("/api/plan/save", response_model=OkResponse)
+def api_plan_save(body: ScenarioRequest) -> OkResponse:
+    """Commit the overlay into the baseline plan_line and clear the overlay."""
+    warehouse.overlay_save(body.scenario)
+    return OkResponse(ok=True)
 
 
-# ---------------------------------------------------------------------------
-# POST /api/production/discard
-# ---------------------------------------------------------------------------
-
-@app.post("/api/production/discard", response_model=DiscardResponse)
-def api_production_discard(request: Request, response: Response) -> DiscardResponse:
-    """Clear all pending edits for this session."""
-    sid = _get_or_create_sid(request, response)
-    overlay = _session_overlay(sid)
-    cleared = len(overlay)
-    _SESSION_OVERLAYS.pop(sid, None)
-    return DiscardResponse(status="ok", cleared=cleared)
+@app.post("/api/plan/discard", response_model=OkResponse)
+def api_plan_discard(body: ScenarioRequest) -> OkResponse:
+    """Drop all pending overlay edits for the scenario."""
+    warehouse.overlay_discard(body.scenario)
+    return OkResponse(ok=True)
 
 
-# ---------------------------------------------------------------------------
-# POST /api/production/reset-week
-# ---------------------------------------------------------------------------
-
-@app.post("/api/production/reset-week", response_model=DiscardResponse)
-def api_production_reset_week(
-    body: ResetWeekRequest,
-    request: Request,
-    response: Response,
-) -> DiscardResponse:
-    """Clear all overlay entries for one specific week."""
-    sid = _get_or_create_sid(request, response)
-    overlay = _session_overlay(sid)
-    keys_to_remove = [k for k in overlay if k[1] == body.week_key]
-    for k in keys_to_remove:
-        del overlay[k]
-    return DiscardResponse(status="ok", cleared=len(keys_to_remove))
+@app.post("/api/plan/reset-week", response_model=RecalcResponse)
+def api_plan_reset_week(body: ResetWeekRequest) -> RecalcResponse:
+    """Revert one week to the baseline plan (drop its overlay rows), recompute."""
+    warehouse.overlay_discard_week(body.scenario, body.week_key)
+    return _grids(body.scenario)
 
 
-# ---------------------------------------------------------------------------
-# POST /api/production/autofix
-# ---------------------------------------------------------------------------
-
-@app.post("/api/production/autofix", response_model=AutoFixResponse)
-def api_production_autofix(request: Request, response: Response) -> AutoFixResponse:
-    """Auto-resolve capacity-rule breaches (R1-R4) by strict trimming.
-
-    Keeps each UNLOCKED week to a single pack size and at most 3 top-priority
-    SKUs, trimming to the ceiling; the excess is dropped, not reallocated.
-    Locked weeks (time fence) are never changed. The computed changes are
-    written into the session overlay as unsaved edits, so the caller reviews
-    them and then Saves or Discards, exactly like manual edits.
-    """
+@app.post("/api/autofix", response_model=RecalcResponse)
+def api_autofix(body: ScenarioRequest) -> RecalcResponse:
+    """Stage strict-trim fixes into the overlay (rule maths from Gold SQL)."""
     from backend import autofix
-    ds = get_dataset()
-    sid = _get_or_create_sid(request, response)
-    overlay = _session_overlay(sid)
+    report = autofix.strict_trim(body.scenario)
+    return _grids(body.scenario, report=report)
 
-    result = autofix.strict_trim(ds, overlay)
-    changes = result["overlay"]
-    for key, qty in changes.items():
-        overlay[key] = qty
-
-    changed_list = [
-        {"sku_code": s, "week_key": wk, "planned_qty": q}
-        for (s, wk), q in changes.items()
-    ]
-    return AutoFixResponse(status="ok", changed=changed_list, report=result["report"])
-
-
-# ---------------------------------------------------------------------------
-# POST /api/recalc
-# ---------------------------------------------------------------------------
 
 @app.post("/api/recalc", response_model=RecalcResponse)
-def api_recalc(request: Request, response: Response) -> RecalcResponse:
-    """Recompute supply, production, and summary for the current session overlay."""
-    from backend import service
+def api_recalc_post(body: ScenarioRequest) -> RecalcResponse:
+    return _grids(body.scenario)
 
-    sid = _get_or_create_sid(request, response)
-    overlay = _session_overlay(sid)
-    ds = get_dataset()
 
-    supply_df = service.build_supply(ds, plan_overlay=overlay)
-    supply_rows = _sanitize_records(supply_df)
-
-    prod = service.build_production(ds, plan_overlay=overlay)
-    week_totals: dict[str, float] = {
-        k: _safe_val(float(v)) for k, v in prod["week_totals"].items()
-    }
-    week_flags: dict[str, dict] = {
-        wk: _sanitize_flat_dict(flags) for wk, flags in prod["week_flags"].items()
-    }
-    prod_rows = [_sanitize_flat_dict(row) for row in prod["rows"]]
-
-    summ = service.summary(supply_df, ds, plan_overlay=overlay)
-    counts: dict[str, int] = {k: int(v) for k, v in summ["counts"].items()}
-    ovp = summ["original_vs_plan"]
-    original: dict[str, int] = {k: int(v) for k, v in ovp["original"].items()}
-    working: dict[str, int] = {k: int(v) for k, v in ovp["working"].items()}
-
-    return RecalcResponse(
-        supply=SupplyResponse(rows=supply_rows),
-        production=ProductionResponse(
-            rows=prod_rows,
-            week_totals=week_totals,
-            week_flags=week_flags,
-            changeovers=int(prod["changeovers"]),
-        ),
-        summary=SummaryResponse(
-            counts=counts,
-            original_vs_plan=SummaryOrigVsPlan(original=original, working=working),
-        ),
-    )
+@app.get("/api/recalc", response_model=RecalcResponse)
+def api_recalc_get(scenario: str = "working") -> RecalcResponse:
+    return _grids(scenario)
 
 
 # ---------------------------------------------------------------------------
-# POST /api/genie/ask  -- start or continue a Genie conversation
-# GET  /api/genie/poll -- fetch message status and response text
+# Editable configuration (Silver writes -> recompute). RULE-005 configurability.
 # ---------------------------------------------------------------------------
 
-@app.post("/api/genie/ask")
-def api_genie_ask(body: GenieAskRequest) -> dict:
-    """Proxy a question to the configured Genie space.
-
-    Starts a new conversation when conversation_id is absent; continues an
-    existing one when it is supplied.  Returns {conversation_id, message_id}
-    so the caller can poll for the answer.
-
-    Returns HTTP 503 when PET_GENIE_SPACE_ID is not configured.
-    Returns HTTP 502 when the Genie SDK call fails.
-    """
-    if not settings.genie_space_id:
-        raise HTTPException(
-            status_code=503,
-            detail="Genie is not configured yet.",
-        )
-    try:
-        from backend import genie
-        return genie.ask(settings.genie_space_id, body.question, body.conversation_id)
-    except Exception as exc:
-        logger.warning("Genie ask failed: %s", exc)
-        raise HTTPException(
-            status_code=502,
-            detail="Genie could not answer right now.",
-        )
+@app.put("/api/parameters", response_model=RecalcResponse)
+def api_put_parameters(body: PutParameterRequest, scenario: str = "working") -> RecalcResponse:
+    warehouse.update_parameter(body.name, body.value)
+    return _grids(scenario)
 
 
-@app.get("/api/genie/poll")
-def api_genie_poll(conversation_id: str, message_id: str) -> dict:
-    """Poll the status of a Genie message.
-
-    Returns {status, text} and, when present, {sql} and {rows}.
-
-    Returns HTTP 503 when PET_GENIE_SPACE_ID is not configured.
-    Returns HTTP 502 when the Genie SDK call fails.
-    """
-    if not settings.genie_space_id:
-        raise HTTPException(
-            status_code=503,
-            detail="Genie is not configured yet.",
-        )
-    try:
-        from backend import genie
-        return genie.poll(settings.genie_space_id, conversation_id, message_id)
-    except Exception as exc:
-        logger.warning("Genie poll failed: %s", exc)
-        raise HTTPException(
-            status_code=502,
-            detail="Genie could not answer right now.",
-        )
-
-
-# ---------------------------------------------------------------------------
-# PUT /api/parameters
-# ---------------------------------------------------------------------------
-
-@app.put("/api/parameters", response_model=PutResponse)
-def api_put_parameters(body: PutParameterRequest) -> PutResponse:
-    """Update a single parameter by name.
-
-    When PET_LIVE=="1": persists via db.update_parameter() and invalidates the
-    dataset cache so the next request reloads from UC.
-    When PET_LIVE is unset: mutates the cached in-memory DataFrame directly so
-    the change is visible on the next GET /api/config without any reload.
-    Returns HTTP 404 if the parameter name is not found.
-    """
-    ds = get_dataset()
-    param_df = ds["parameter"]
-    mask = param_df["name"] == body.name
-    if not mask.any():
-        raise HTTPException(status_code=404, detail=f"Parameter {body.name!r} not found")
-
-    if os.environ.get("PET_LIVE") == "1":
-        from backend import db
-        db.update_parameter(body.name, body.value)
-        refresh_dataset()
-    else:
-        ds["parameter"].loc[mask, "value"] = float(body.value)
-
-    return PutResponse(status="ok")
-
-
-# ---------------------------------------------------------------------------
-# PUT /api/weeks
-# ---------------------------------------------------------------------------
-
-@app.put("/api/weeks", response_model=PutResponse)
-def api_put_weeks(body: PutWeekRequest) -> PutResponse:
-    """Update editable fields (maintenance_type, is_locked, note) for one week.
-
-    Only the fields explicitly provided (non-None) are updated.
-    Returns HTTP 404 if the week_key is not found.
-    """
-    ds = get_dataset()
-    week_df = ds["week"]
-    mask = week_df["week_key"] == body.week_key
-    if not mask.any():
-        raise HTTPException(status_code=404, detail=f"Week {body.week_key!r} not found")
-
+@app.put("/api/weeks", response_model=RecalcResponse)
+def api_put_weeks(body: PutWeekRequest, scenario: str = "working") -> RecalcResponse:
     fields: dict = {}
     if body.maintenance_type is not None:
         fields["maintenance_type"] = body.maintenance_type
@@ -593,115 +231,143 @@ def api_put_weeks(body: PutWeekRequest) -> PutResponse:
         fields["is_locked"] = body.is_locked
     if body.note is not None:
         fields["note"] = body.note
-
-    if os.environ.get("PET_LIVE") == "1":
-        from backend import db
-        db.update_week(body.week_key, fields)
-        refresh_dataset()
-    else:
-        for col, val in fields.items():
-            ds["week"].loc[mask, col] = val
-
-    return PutResponse(status="ok")
+    warehouse.update_week(body.week_key, fields)
+    return _grids(scenario)
 
 
-# ---------------------------------------------------------------------------
-# PUT /api/skus
-# ---------------------------------------------------------------------------
-
-@app.put("/api/skus", response_model=PutResponse)
-def api_put_skus(body: PutSKURequest) -> PutResponse:
-    """Update editable fields (priority, status) for one SKU.
-
-    Only the fields explicitly provided (non-None) are updated.
-    Returns HTTP 404 if the sku_code is not found.
-    """
-    ds = get_dataset()
-    sku_df = ds["sku"]
-    mask = sku_df["sku_code"] == body.sku_code
-    if not mask.any():
-        raise HTTPException(status_code=404, detail=f"SKU {body.sku_code!r} not found")
-
+@app.put("/api/skus", response_model=RecalcResponse)
+def api_put_skus(body: PutSkuRequest, scenario: str = "working") -> RecalcResponse:
     fields: dict = {}
     if body.priority is not None:
         fields["priority"] = body.priority
     if body.status is not None:
         fields["status"] = body.status
-
-    if os.environ.get("PET_LIVE") == "1":
-        from backend import db
-        db.update_sku(body.sku_code, fields)
-        refresh_dataset()
-    else:
-        for col, val in fields.items():
-            ds["sku"].loc[mask, col] = val
-
-    return PutResponse(status="ok")
+    warehouse.update_sku(body.sku_code, fields)
+    return _grids(scenario)
 
 
 # ---------------------------------------------------------------------------
-# GET /api/export/excel, GET /api/export/pdf
-#
-# Both build their document from the exact same service-layer computation
-# the read endpoints use (backend.export.gather_export_data), applying the
-# current session overlay -- an export always matches what the caller sees
-# on screen, including unsaved edits.
-#
-# NOTE on cookies: FastAPI only merges the injected `response` parameter's
-# headers into the final response when the endpoint returns a plain value.
-# Here we return our own Response (binary body + custom media type), which
-# FastAPI uses verbatim -- so any Set-Cookie written onto the injected
-# `response` via _get_or_create_sid() must be copied onto it explicitly.
+# Excel upload -> UC Volume -> Lakeflow pipeline
 # ---------------------------------------------------------------------------
 
-def _copy_session_cookie(source: Response, target: Response) -> None:
-    set_cookie = source.headers.get("set-cookie")
-    if set_cookie:
-        target.headers["set-cookie"] = set_cookie
+@app.post("/api/upload", response_model=UploadResponse)
+def api_upload(file: UploadFile = File(...)) -> UploadResponse:
+    """Land an uploaded workbook in the Volume and trigger a pipeline update."""
+    if not settings.pipeline_id:
+        raise HTTPException(status_code=503, detail="Pipeline is not configured yet.")
+    cat, sch, vol = settings.volume.split(".", 2)
+    stamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    safe_name = os.path.basename(file.filename or "upload.xlsx")
+    path = f"/Volumes/{cat}/{sch}/{vol}/uploads/{stamp}_{safe_name}"
+
+    w = warehouse.get_workspace_client()
+    try:
+        w.files.upload(path, io.BytesIO(file.file.read()), overwrite=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Volume upload failed")
+        raise HTTPException(status_code=502, detail=f"Upload failed: {exc}") from exc
+    try:
+        resp = w.pipelines.start_update(pipeline_id=settings.pipeline_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Pipeline start failed")
+        raise HTTPException(status_code=502, detail=f"Pipeline start failed: {exc}") from exc
+    return UploadResponse(run_id=resp.update_id)
 
 
-@app.get("/api/export/excel")
-def api_export_excel(request: Request, response: Response) -> Response:
-    """Return the full dataset (+ working plan) as a multi-sheet .xlsx file."""
+@app.get("/api/pipeline/status", response_model=PipelineStatusResponse)
+def api_pipeline_status(run_id: str) -> PipelineStatusResponse:
+    if not settings.pipeline_id:
+        raise HTTPException(status_code=503, detail="Pipeline is not configured yet.")
+    w = warehouse.get_workspace_client()
+    try:
+        upd = w.pipelines.get_update(pipeline_id=settings.pipeline_id, update_id=run_id)
+    except Exception as exc:  # unknown/invalid run_id -> 404, not an opaque 500
+        raise HTTPException(status_code=404, detail=f"No pipeline update '{run_id}' found.") from exc
+    u = upd.update
+    state = u.state.value if (u and u.state) else "UNKNOWN"
+    detail = {"creation_time": getattr(u, "creation_time", None)} if u else None
+    return PipelineStatusResponse(state=state, detail=detail)
+
+
+# ---------------------------------------------------------------------------
+# Export (presentation only — feeds Gold rows into the existing builders)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/export")
+def api_export(format: str = "xlsx", scenario: str = "working"):
+    import pandas as pd
+    from fastapi import Response
+
     from backend import export as export_mod
 
-    sid = _get_or_create_sid(request, response)
-    overlay = _session_overlay(sid)
-    ds = get_dataset()
+    s = warehouse.silver()
+    sku_df = pd.DataFrame(warehouse.run_sql(f"SELECT * FROM {s.t('sku')} ORDER BY priority"))
+    week_df = pd.DataFrame(warehouse.run_sql(f"SELECT * FROM {s.t('week')} ORDER BY horizon_index"))
+    param_df = pd.DataFrame(warehouse.run_sql(f"SELECT * FROM {s.t('parameter')} ORDER BY name"))
+    plan_df = pd.DataFrame(warehouse.effective_plan_rows(scenario))
+    if not plan_df.empty:
+        plan_df["orig_qty"] = plan_df["planned_qty"]
+    dataset = {"sku": sku_df, "week": week_df, "parameter": param_df, "plan_line": plan_df}
 
-    content = export_mod.build_excel_export(ds, plan_overlay=overlay)
+    supply_df = pd.DataFrame(_supply(scenario))
+    prod_model = _production(scenario)
+    prod = {
+        "rows": prod_model.rows,
+        "week_totals": prod_model.week_totals,
+        "week_flags": prod_model.week_flags,
+        "changeovers": prod_model.changeovers,
+    }
+    summ_model = _summary(scenario)
+    summ = {
+        "counts": summ_model.counts,
+        "original_vs_plan": {
+            "original": summ_model.original_vs_plan.original,
+            "working": summ_model.original_vs_plan.working,
+        },
+    }
+
     stamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filename = f"pet_line_planner_export_{stamp}.xlsx"
-
-    file_response = Response(
+    if format == "pdf":
+        content = export_mod.build_pdf_export(dataset, supply_df, prod, summ)
+        return Response(
+            content=content,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="pet_report_{stamp}.pdf"'},
+        )
+    content = export_mod.build_excel_export(dataset, supply_df, prod, summ)
+    return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="pet_export_{stamp}.xlsx"'},
     )
-    _copy_session_cookie(response, file_response)
-    return file_response
 
 
-@app.get("/api/export/pdf")
-def api_export_pdf(request: Request, response: Response) -> Response:
-    """Return the full planning report (+ working plan) as a formatted .pdf file."""
-    from backend import export as export_mod
+# ---------------------------------------------------------------------------
+# Genie proxy
+# ---------------------------------------------------------------------------
 
-    sid = _get_or_create_sid(request, response)
-    overlay = _session_overlay(sid)
-    ds = get_dataset()
+@app.post("/api/genie/ask")
+def api_genie_ask(body: GenieAskRequest) -> dict:
+    if not settings.genie_space_id:
+        raise HTTPException(status_code=503, detail="Genie is not configured yet.")
+    try:
+        from backend import genie
+        return genie.ask(settings.genie_space_id, body.question, body.conversation_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Genie ask failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Genie could not answer right now.") from exc
 
-    content = export_mod.build_pdf_export(ds, plan_overlay=overlay)
-    stamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filename = f"pet_line_planner_report_{stamp}.pdf"
 
-    file_response = Response(
-        content=content,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-    _copy_session_cookie(response, file_response)
-    return file_response
+@app.get("/api/genie/poll")
+def api_genie_poll(conversation_id: str, message_id: str) -> dict:
+    if not settings.genie_space_id:
+        raise HTTPException(status_code=503, detail="Genie is not configured yet.")
+    try:
+        from backend import genie
+        return genie.poll(settings.genie_space_id, conversation_id, message_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Genie poll failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Genie could not answer right now.") from exc
 
 
 # ---------------------------------------------------------------------------

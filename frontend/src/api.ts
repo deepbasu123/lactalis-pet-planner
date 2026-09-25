@@ -164,9 +164,14 @@ export interface AutoFixReport {
 }
 
 export interface AutoFixResponse {
-  status: string;             // "ok"
-  changed: PlanCell[];        // cells whose planned_qty changed
-  report: AutoFixReport;
+  status?: string;            // "ok"
+  changed?: PlanCell[];       // classic backend: cells whose planned_qty changed
+  report?: AutoFixReport;     // classic backend: strict-trim report
+  // Re-architected backend stages the fix into the overlay server-side and may
+  // instead return the refreshed grids. Both shapes are tolerated by callers.
+  supply?: SupplyCell[] | { rows: SupplyCell[] };
+  production?: ProductionResponse;
+  summary?: SummaryResponse;
 }
 
 // ── POST /api/production/reset-week (request body) ───────────────────────────
@@ -269,34 +274,72 @@ function jsonPut<T>(url: string, body: unknown): Promise<T> {
   });
 }
 
+// ── Scenario ──────────────────────────────────────────────────────────────────
+// The planner works in a single named scenario. The re-architected backend
+// applies each edit as an overlay over the pipeline-seeded Silver baseline and
+// re-runs the SAME Gold rule SQL on a warm serverless warehouse (~1-2s). The UI
+// runs zero business logic — it only reads Gold and writes edits.
+export const SCENARIO = 'working';
+
+// ── Supply normalisation ────────────────────────────────────────────────────
+// The /api/supply payload (and the "supply" field of an edit/autofix bundle)
+// may arrive as a bare array of rows or as { rows: [...] }. Normalise to rows.
+export function normalizeSupply(payload: unknown): SupplyCell[] {
+  if (Array.isArray(payload)) return payload as SupplyCell[];
+  if (payload && typeof payload === 'object' && Array.isArray((payload as { rows?: unknown }).rows)) {
+    return (payload as { rows: SupplyCell[] }).rows;
+  }
+  return [];
+}
+
 // ── Exported API functions ────────────────────────────────────────────────────
 
-export const fetchConfig = (): Promise<ConfigResponse> =>
-  apiFetch<ConfigResponse>('/api/config');
+export const fetchConfig = async (): Promise<ConfigResponse> => {
+  // New backend endpoint is /api/meta; tolerate a missing derived meta block.
+  const data = await apiFetch<Partial<ConfigResponse> & { total_production?: number }>('/api/meta');
+  const meta: RunMeta = data.meta ?? {
+    sku_count: (data.skus ?? []).length,
+    week_count: (data.weeks ?? []).length,
+    total_production: data.total_production ?? 0,
+  };
+  return {
+    skus: data.skus ?? [],
+    weeks: data.weeks ?? [],
+    parameters: data.parameters ?? [],
+    meta,
+  };
+};
 
-export const fetchSupply = (): Promise<SupplyResponse> =>
-  apiFetch<SupplyResponse>('/api/supply');
+export const fetchSupply = async (): Promise<SupplyResponse> => {
+  const data = await apiFetch<unknown>(`/api/supply?scenario=${encodeURIComponent(SCENARIO)}`);
+  return { rows: normalizeSupply(data) };
+};
 
 export const fetchProduction = (): Promise<ProductionResponse> =>
-  apiFetch<ProductionResponse>('/api/production');
+  apiFetch<ProductionResponse>(`/api/production?scenario=${encodeURIComponent(SCENARIO)}`);
 
 export const fetchSummary = (): Promise<SummaryResponse> =>
-  apiFetch<SummaryResponse>('/api/summary');
+  apiFetch<SummaryResponse>(`/api/summary?scenario=${encodeURIComponent(SCENARIO)}`);
 
 export const editCell = (req: EditCellRequest): Promise<EditCellResponse> =>
-  jsonPost<EditCellResponse>('/api/production/edit', req);
+  jsonPost<EditCellResponse>('/api/plan/edit', {
+    sku_code: req.sku_code,
+    week_key: req.week_key,
+    planned_qty: req.qty,
+    scenario: SCENARIO,
+  });
 
 export const saveProduction = (): Promise<SaveResponse> =>
-  jsonPost<SaveResponse>('/api/production/save', {});
+  jsonPost<SaveResponse>('/api/plan/save', { scenario: SCENARIO });
 
 export const discardProduction = (): Promise<DiscardResponse> =>
-  jsonPost<DiscardResponse>('/api/production/discard', {});
+  jsonPost<DiscardResponse>('/api/plan/discard', { scenario: SCENARIO });
 
 export const resetWeek = (req: ResetWeekRequest): Promise<DiscardResponse> =>
-  jsonPost<DiscardResponse>('/api/production/reset-week', req);
+  jsonPost<DiscardResponse>('/api/plan/reset-week', { week_key: req.week_key, scenario: SCENARIO });
 
 export const autoFixBreaches = (): Promise<AutoFixResponse> =>
-  jsonPost<AutoFixResponse>('/api/production/autofix', {});
+  jsonPost<AutoFixResponse>('/api/autofix', { scenario: SCENARIO });
 
 export const updateParameter = (req: PutParameterRequest): Promise<PutResponse> =>
   jsonPut<PutResponse>('/api/parameters', req);
@@ -362,8 +405,48 @@ async function triggerDownload(url: string, fallbackFilename: string): Promise<v
   URL.revokeObjectURL(objectUrl);
 }
 
+// ── POST /api/upload, GET /api/pipeline/status ───────────────────────────────
+// Upload a "PET Traffic Lights" .xlsx. The app writes it to a Unity Catalog
+// Volume and triggers the Lakeflow Declarative Pipeline (Bronze -> Silver ->
+// Gold). No workbook parsing happens in the browser or the app process.
+
+export interface UploadResponse {
+  run_id: string;
+}
+
+export interface PipelineStatus {
+  state: string;   // QUEUED | RUNNING | COMPLETED | FAILED (or a stage name)
+  stage?: string;  // BRONZE | SILVER | GOLD, when the backend reports it
+  detail?: string; // human-readable status / error message
+}
+
+export const uploadWorkbook = async (file: File): Promise<UploadResponse> => {
+  const form = new FormData();
+  form.append('file', file);
+  // Note: do NOT set Content-Type — the browser adds the multipart boundary.
+  const res = await fetch('/api/upload', {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`API ${res.status} ${res.statusText}${body ? ': ' + body : ''}`);
+  }
+  return res.json() as Promise<UploadResponse>;
+};
+
+export const pipelineStatus = (runId: string): Promise<PipelineStatus> =>
+  apiFetch<PipelineStatus>(`/api/pipeline/status?run_id=${encodeURIComponent(runId)}`);
+
 export const exportExcel = (): Promise<void> =>
-  triggerDownload('/api/export/excel', 'pet_line_planner_export.xlsx');
+  triggerDownload(
+    `/api/export?format=xlsx&scenario=${encodeURIComponent(SCENARIO)}`,
+    'pet_line_planner_export.xlsx',
+  );
 
 export const exportPdf = (): Promise<void> =>
-  triggerDownload('/api/export/pdf', 'pet_line_planner_report.pdf');
+  triggerDownload(
+    `/api/export?format=pdf&scenario=${encodeURIComponent(SCENARIO)}`,
+    'pet_line_planner_report.pdf',
+  );

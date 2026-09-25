@@ -1,514 +1,205 @@
 """tests/test_api.py
 
-TDD tests for the read API endpoints.  PET_LIVE is unset so all calls use
-synthetic data produced by data_gen.generate() -- no Databricks workspace
-needed.
+Unit tests for the thin serving layer. The warehouse boundary
+(backend.warehouse) is mocked, so these run offline and assert response
+SHAPING + validation, not the SQL maths (that is proven separately by the SQL
+golden regression and by tests/test_api_live.py against real Silver).
 """
-import json
-from unittest.mock import MagicMock, patch
-
-import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.main import app
+import backend.main as m
+from backend import warehouse
 
-CANONICAL_COLOURS = {
-    "dark_blue",
-    "light_blue",
-    "green",
-    "amber",
-    "red",
-    "dark_red",
-    "black",
+client = TestClient(m.app)
+
+_SUPPLY_ROW = {
+    "sku_code": "60444", "week_key": "2026-W35", "horizon_index": 1,
+    "opening": 100.0, "recv": 0.0, "prod": 24000.0, "demand": 23000.0,
+    "raw": 77000.0, "close": 77000.0, "cover_weeks": 3, "severity": 6,
+    "colour": "dark_blue", "display_value": 77000.0, "is_lost_sale": False,
 }
-
-_client = TestClient(app)
-
-_JSON_NATIVE = (int, float, str, bool, type(None))
-
-
-def _no_nan(text: str) -> bool:
-    """Return True only if the raw response text contains no NaN literal."""
-    return "NaN" not in text
-
-
-def _all_json_native(obj) -> bool:
-    """Recursively verify every leaf value is a JSON-native Python type.
-
-    Catches non-NaN numpy scalars (e.g. numpy.int64) that _no_nan() misses
-    because they serialise to a valid number string rather than 'NaN'.
-    """
-    if isinstance(obj, dict):
-        return all(_all_json_native(v) for v in obj.values())
-    if isinstance(obj, list):
-        return all(_all_json_native(item) for item in obj)
-    return isinstance(obj, _JSON_NATIVE)
-
-
-# ---------------------------------------------------------------------------
-# /api/config
-# ---------------------------------------------------------------------------
-
-class TestConfig:
-    def test_status_200(self):
-        r = _client.get("/api/config")
-        assert r.status_code == 200
-
-    def test_eleven_skus(self):
-        r = _client.get("/api/config")
-        data = r.json()
-        assert len(data["skus"]) == 11
-
-    def test_fiftytwo_weeks(self):
-        r = _client.get("/api/config")
-        data = r.json()
-        assert len(data["weeks"]) == 52
-
-    def test_ten_parameters(self):
-        r = _client.get("/api/config")
-        data = r.json()
-        assert len(data["parameters"]) == 10
-
-    def test_no_nan(self):
-        r = _client.get("/api/config")
-        assert _no_nan(r.text)
-
-
-# ---------------------------------------------------------------------------
-# /api/supply
-# ---------------------------------------------------------------------------
-
-class TestSupply:
-    def test_status_200(self):
-        r = _client.get("/api/supply")
-        assert r.status_code == 200
-
-    def test_572_cells(self):
-        r = _client.get("/api/supply")
-        data = r.json()
-        assert len(data["rows"]) == 572
-
-    def test_every_cell_has_canonical_colour(self):
-        r = _client.get("/api/supply")
-        data = r.json()
-        for cell in data["rows"]:
-            assert cell["colour"] in CANONICAL_COLOURS, (
-                f"Unexpected colour: {cell['colour']!r}"
-            )
-
-    def test_no_nan(self):
-        r = _client.get("/api/supply")
-        assert _no_nan(r.text)
-
-
-# ---------------------------------------------------------------------------
-# /api/summary
-# ---------------------------------------------------------------------------
-
-class TestSummary:
-    def test_status_200(self):
-        r = _client.get("/api/summary")
-        assert r.status_code == 200
-
-    def test_colour_counts_sum_to_572(self):
-        r = _client.get("/api/summary")
-        data = r.json()
-        total = sum(data["counts"].values())
-        assert total == 572
-
-    def test_no_nan(self):
-        r = _client.get("/api/summary")
-        assert _no_nan(r.text)
-
-
-# ---------------------------------------------------------------------------
-# /api/production
-# ---------------------------------------------------------------------------
-
-class TestProduction:
-    def test_status_200(self):
-        r = _client.get("/api/production")
-        assert r.status_code == 200
-
-    def test_week_totals_length_52(self):
-        r = _client.get("/api/production")
-        data = r.json()
-        assert len(data["week_totals"]) == 52
-
-    def test_no_nan(self):
-        r = _client.get("/api/production")
-        assert _no_nan(r.text)
-
-    def test_rows_contain_only_json_native_types(self):
-        """Catch non-NaN numpy scalars that _no_nan misses (e.g. numpy.int64)."""
-        r = _client.get("/api/production")
-        data = r.json()
-        for i, row in enumerate(data["rows"]):
-            assert _all_json_native(row), (
-                f"Row {i} contains a non-JSON-native value: {row}"
-            )
-
-
-# ---------------------------------------------------------------------------
-# Edit / save / discard overlay endpoints
-# ---------------------------------------------------------------------------
-
-# Dedicated TestClient so the session cookie persists across all edit-test
-# requests without touching the shared _client used by the read-only tests.
-_edit_client = TestClient(app)
-
-# Locked weeks (horizon_index 1-3 -> 2026-W35, 2026-W36, 2026-W37)
-_LOCKED_WEEK = "2026-W35"
-# Non-locked weeks used across the four tests (choose different weeks so
-# edits from one test do not cascade into another test's supply assertions).
-_WEEK_A = "2026-W38"   # used by test_edit_overlay_changes_supply
-_WEEK_B = "2026-W40"   # used by test_discard_clears_overlay
-_WEEK_C = "2026-W41"   # used by test_save_clears_overlay_nolive
-_SKU = "61108"          # OAK UHT CHOCOLATE 500ML -- non-shortage SKU, high volume
-
-
-class TestEditOverlay:
-    """TDD tests for the working-copy overlay endpoints."""
-
-    def test_edit_overlay_changes_supply(self):
-        """Edit a non-locked cell to 0; GET /api/supply should show prod=0 and
-        change the closing stock of a downstream week (QA hold = 2 weeks).
-
-        The engine applies qa_hold_weeks=2: production from W38 (horizon_index=4)
-        is received as `recv` in W40 (horizon_index=6).  The edited week's own
-        `close` is unaffected; the first visible change is two weeks downstream.
-        """
-        # Baseline supply for SKU 61108 indexed by week_key
-        rows_before = {
-            row["week_key"]: row
-            for row in _edit_client.get("/api/supply").json()["rows"]
-            if row["sku_code"] == _SKU
-        }
-        assert rows_before[_WEEK_A]["prod"] != 0.0, (
-            "Pre-condition: baseline planned_qty for W38 should be non-zero"
-        )
-
-        # Edit WEEK_A (2026-W38) to zero
-        r_edit = _edit_client.post("/api/production/edit", json={
-            "sku_code": _SKU, "week_key": _WEEK_A, "qty": 0.0,
-        })
-        assert r_edit.status_code == 200
-
-        # GET /api/supply should reflect the overlay
-        rows_after = {
-            row["week_key"]: row
-            for row in _edit_client.get("/api/supply").json()["rows"]
-            if row["sku_code"] == _SKU
-        }
-
-        # The edited cell shows prod=0 (overlay applied)
-        assert rows_after[_WEEK_A]["prod"] == 0.0
-
-        # Downstream close changes: W38 production (qa_hold=2) lands in W40.
-        # W40 close must differ from baseline because recv is now 0 there.
-        _QA_DOWNSTREAM = "2026-W40"
-        assert rows_after[_QA_DOWNSTREAM]["close"] != rows_before[_QA_DOWNSTREAM]["close"]
-
-    def test_edit_locked_week_returns_409(self):
-        """Editing a locked week must return HTTP 409."""
-        r = _edit_client.post("/api/production/edit", json={
-            "sku_code": _SKU, "week_key": _LOCKED_WEEK, "qty": 999.0,
-        })
-        assert r.status_code == 409
-
-    def test_discard_clears_overlay(self):
-        """After discard, GET /api/supply returns baseline close for the edited cell."""
-        # Get the baseline close for WEEK_B using the clean shared client
-        # (different session, no overlay).
-        baseline_rows = _client.get("/api/supply").json()["rows"]
-        cell_baseline = next(
-            row for row in baseline_rows
-            if row["sku_code"] == _SKU and row["week_key"] == _WEEK_B
-        )
-
-        # Edit WEEK_B to zero on the edit client
-        _edit_client.post("/api/production/edit", json={
-            "sku_code": _SKU, "week_key": _WEEK_B, "qty": 0.0,
-        })
-
-        # Discard the entire session overlay
-        r_discard = _edit_client.post("/api/production/discard")
-        assert r_discard.status_code == 200
-
-        # Supply should now match the clean baseline close for WEEK_B
-        rows_after = _edit_client.get("/api/supply").json()["rows"]
-        cell_after = next(
-            row for row in rows_after
-            if row["sku_code"] == _SKU and row["week_key"] == _WEEK_B
-        )
-        assert cell_after["close"] == cell_baseline["close"]
-
-    def test_save_clears_overlay_nolive(self):
-        """Save (PET_LIVE unset) returns success with saved>=1 and clears the overlay."""
-        # Edit WEEK_C to zero
-        _edit_client.post("/api/production/edit", json={
-            "sku_code": _SKU, "week_key": _WEEK_C, "qty": 0.0,
-        })
-
-        # Save
-        r_save = _edit_client.post("/api/production/save")
-        assert r_save.status_code == 200
-        data = r_save.json()
-        assert data["saved"] >= 1
-
-        # After save the overlay is cleared -- supply should match the clean baseline
-        baseline_rows = _client.get("/api/supply").json()["rows"]
-        rows_after = _edit_client.get("/api/supply").json()["rows"]
-
-        cell_baseline = next(
-            row for row in baseline_rows
-            if row["sku_code"] == _SKU and row["week_key"] == _WEEK_C
-        )
-        cell_after = next(
-            row for row in rows_after
-            if row["sku_code"] == _SKU and row["week_key"] == _WEEK_C
-        )
-        assert cell_after["close"] == cell_baseline["close"]
-
-
-# ---------------------------------------------------------------------------
-# PUT /api/parameters, PUT /api/weeks, PUT /api/skus
-# ---------------------------------------------------------------------------
-
-# Use a dedicated client so session overlays from the edit tests are isolated.
-_put_client = TestClient(app)
-
-
-class TestPutEndpoints:
-    """TDD tests for config PUT endpoints (PET_LIVE unset: in-memory mutation)."""
-
-    def teardown_method(self, method):
-        """Reset the module-level dataset cache after each test so mutations
-        from one test do not bleed into subsequent tests or into the read-only
-        TestConfig / TestSummary test expectations."""
-        from backend.main import refresh_dataset
-        refresh_dataset()
-
-    def test_put_parameter_updates_value(self):
-        """PUT /api/parameters -> GET /api/config shows the new value."""
-        name = "cap_400ml_1_2_sku"
-        new_value = 999999.0
-
-        r = _put_client.put("/api/parameters", json={"name": name, "value": new_value})
-        assert r.status_code == 200
-        assert r.json()["status"] == "ok"
-
-        config = _put_client.get("/api/config").json()
-        param = next(p for p in config["parameters"] if p["name"] == name)
-        assert param["value"] == new_value
-
-    def test_put_parameter_unknown_name_returns_404(self):
-        """PUT /api/parameters with an unknown parameter name returns HTTP 404."""
-        r = _put_client.put("/api/parameters", json={"name": "nonexistent_param", "value": 1.0})
-        assert r.status_code == 404
-
-    def test_put_week_is_locked_reflected_in_config(self):
-        """PUT /api/weeks is_locked change -> GET /api/config shows updated value."""
-        # Week 2026-W38 is not locked by default (horizon_index=4, outside time fence)
-        week_key = "2026-W38"
-        r = _put_client.put("/api/weeks", json={"week_key": week_key, "is_locked": True})
-        assert r.status_code == 200
-        assert r.json()["status"] == "ok"
-
-        config = _put_client.get("/api/config").json()
-        week = next(w for w in config["weeks"] if w["week_key"] == week_key)
-        assert week["is_locked"] is True
-
-    def test_put_week_unknown_key_returns_404(self):
-        """PUT /api/weeks with an unknown week_key returns HTTP 404."""
-        r = _put_client.put("/api/weeks", json={"week_key": "9999-W99"})
-        assert r.status_code == 404
-
-    def test_put_sku_priority_reflected_in_config(self):
-        """PUT /api/skus priority change -> GET /api/config shows updated value."""
-        sku_code = "61108"
-        r = _put_client.put("/api/skus", json={"sku_code": sku_code, "priority": 99})
-        assert r.status_code == 200
-        assert r.json()["status"] == "ok"
-
-        config = _put_client.get("/api/config").json()
-        sku = next(s for s in config["skus"] if s["sku_code"] == sku_code)
-        assert sku["priority"] == 99
-
-    def test_put_sku_unknown_code_returns_404(self):
-        """PUT /api/skus with an unknown sku_code returns HTTP 404."""
-        r = _put_client.put("/api/skus", json={"sku_code": "NOSUCHSKU"})
-        assert r.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# C2 regression: save overlay conversion (live mode)
-# ---------------------------------------------------------------------------
-
-class TestSaveOverlayConversion:
-    """C2: POST /api/production/save must convert overlay dict to a rows list.
-
-    In live mode (PET_LIVE=1) the endpoint previously passed the overlay dict
-    directly to db.merge_plan_lines(), which iterates it as if it were a list
-    of row dicts -- this caused a TypeError.
-
-    Strategy: edit endpoints run WITHOUT PET_LIVE so the synthetic dataset is
-    loaded into the module cache.  PET_LIVE=1 is set only immediately before
-    the save call so the live-mode branch executes with the cached synthetic
-    data and mocked db functions -- no Databricks workspace needed.
-    """
-
-    def setup_method(self, _method):
-        """Clear dataset cache and session overlays before each test."""
-        import os
-        os.environ.pop("PET_LIVE", None)  # ensure synthetic mode during edit
-        from backend.main import refresh_dataset, _SESSION_OVERLAYS
-        refresh_dataset()
-        _SESSION_OVERLAYS.clear()
-
-    def teardown_method(self, _method):
-        """Restore clean state and unset PET_LIVE so other tests are unaffected."""
-        import os
-        os.environ.pop("PET_LIVE", None)
-        from backend.main import refresh_dataset, _SESSION_OVERLAYS
-        refresh_dataset()
-        _SESSION_OVERLAYS.clear()
-
-    # Reusable empty DataFrame matching the snapshot column shape
-    _EMPTY_DF = pd.DataFrame(columns=[
-        "sku_code", "week_key", "horizon_index", "opening", "recv",
-        "prod", "demand", "raw", "close", "cover_weeks", "severity", "colour",
-    ])
-
-    def test_save_builds_rows_list_for_merge(self, monkeypatch):
-        """Overlay dict is converted to [{sku_code, week_key, planned_qty}] for merge."""
-        save_client = TestClient(app)
-
-        # Edit WITHOUT PET_LIVE -> loads synthetic dataset into cache
-        r_edit = save_client.post("/api/production/edit", json={
-            "sku_code": "61108", "week_key": "2026-W38", "qty": 500.0,
-        })
-        assert r_edit.status_code == 200
-
-        # Switch to live mode ONLY for the save call; dataset is already cached
-        monkeypatch.setenv("PET_LIVE", "1")
-        mock_merge = MagicMock()
-
-        with patch("backend.db.merge_plan_lines", mock_merge), \
-             patch("backend.db.write_snapshot"), \
-             patch("backend.service.build_supply", return_value=self._EMPTY_DF):
-            r_save = save_client.post("/api/production/save")
-
-        assert r_save.status_code == 200
-        assert r_save.json()["saved"] == 1
-
-        # merge_plan_lines must have been called with a LIST (not a dict)
-        mock_merge.assert_called_once()
-        rows_arg = mock_merge.call_args[0][0]
-        assert isinstance(rows_arg, list), (
-            f"merge_plan_lines must receive a list, got {type(rows_arg).__name__}"
-        )
-        assert len(rows_arg) == 1
-        row = rows_arg[0]
-        assert isinstance(row, dict)
-        assert row["sku_code"] == "61108"
-        assert row["week_key"] == "2026-W38"
-        assert row["planned_qty"] == pytest.approx(500.0)
-
-    def test_empty_overlay_does_not_call_merge(self, monkeypatch):
-        """With no pending edits, merge_plan_lines must NOT be called at all."""
-        save_client = TestClient(app)
-
-        # Load synthetic dataset into cache (no edit needed, just hit /api/config)
-        save_client.get("/api/config")
-
-        # Switch to live mode; overlay is empty
-        monkeypatch.setenv("PET_LIVE", "1")
-        mock_merge = MagicMock()
-
-        with patch("backend.db.merge_plan_lines", mock_merge), \
-             patch("backend.db.write_snapshot"), \
-             patch("backend.service.build_supply", return_value=self._EMPTY_DF):
-            r_save = save_client.post("/api/production/save")
-
-        assert r_save.status_code == 200
-        mock_merge.assert_not_called()
-
-    def test_save_multi_row_overlay_all_rows_present(self, monkeypatch):
-        """Multiple overlay entries all land in the rows list."""
-        save_client = TestClient(app)
-
-        # Edit two different cells WITHOUT PET_LIVE
-        save_client.post("/api/production/edit", json={
-            "sku_code": "61108", "week_key": "2026-W38", "qty": 100.0,
-        })
-        save_client.post("/api/production/edit", json={
-            "sku_code": "61747", "week_key": "2026-W39", "qty": 200.0,
-        })
-
-        monkeypatch.setenv("PET_LIVE", "1")
-        mock_merge = MagicMock()
-
-        with patch("backend.db.merge_plan_lines", mock_merge), \
-             patch("backend.db.write_snapshot"), \
-             patch("backend.service.build_supply", return_value=self._EMPTY_DF):
-            r_save = save_client.post("/api/production/save")
-
-        assert r_save.status_code == 200
-        rows_arg = mock_merge.call_args[0][0]
-        assert isinstance(rows_arg, list)
-        assert len(rows_arg) == 2
-        keys = {(r["sku_code"], r["week_key"]) for r in rows_arg}
-        assert ("61108", "2026-W38") in keys
-        assert ("61747", "2026-W39") in keys
-
-
-# ---------------------------------------------------------------------------
-# POST /api/production/autofix
-# ---------------------------------------------------------------------------
-
-def _locked_week_keys(client) -> set[str]:
-    cfg = client.get("/api/config").json()
-    return {w["week_key"] for w in cfg["weeks"] if w["is_locked"]}
-
-
-class TestAutoFix:
-    def test_returns_ok_with_changes_and_report(self):
-        client = TestClient(app)
-        r = client.post("/api/production/autofix")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["status"] == "ok"
-        assert isinstance(body["changed"], list)
-        assert len(body["changed"]) > 0
-        for k in ("weeks_changed", "cells_zeroed", "volume_dropped",
-                  "locked_weeks_skipped"):
-            assert k in body["report"]
-
-    def test_unlocked_weeks_compliant_after_autofix(self):
-        """After autofix, GET /api/production shows no R1-R4 breach off-lock."""
-        client = TestClient(app)
-        locked = _locked_week_keys(client)
-        client.post("/api/production/autofix")
-        prod = client.get("/api/production").json()
-        offenders = [
-            wk for wk, f in prod["week_flags"].items()
-            if wk not in locked and (f["R1"] or f["R2"] or f["R3"] or f["R4"])
-        ]
-        assert offenders == [], f"unlocked weeks still breaching: {offenders}"
-
-    def test_autofix_writes_to_overlay_then_discard_restores(self):
-        client = TestClient(app)
-        client.post("/api/production/autofix")
-        # The overlay now holds the changes; discard should clear them all.
-        r_discard = client.post("/api/production/discard")
-        assert r_discard.status_code == 200
-        assert r_discard.json()["cleared"] > 0
-
-    def test_does_not_touch_locked_weeks(self):
-        client = TestClient(app)
-        locked = _locked_week_keys(client)
-        changed = client.post("/api/production/autofix").json()["changed"]
-        for cell in changed:
-            assert cell["week_key"] not in locked
+_PROD_ROW = {
+    "week_key": "2026-W35", "horizon_index": 1, "maintenance_type": "None",
+    "total": 450000.0, "n_skus": 11, "n_packs": 2, "pack_ml": 400,
+    "is_changeover": False, "ceiling": 650000.0, "r1": True, "r2": True,
+    "r3": False, "r4": False, "no_rule": False, "over_units": 0,
+}
+_PLAN_ROWS = [{"sku_code": "60444", "week_key": "2026-W35", "planned_qty": 24000.0}]
+_COLOUR_ROWS = [{"colour": "dark_blue", "n": 400}, {"colour": "red", "n": 172}]
+
+
+def test_health_ok():
+    assert client.get("/api/health").json() == {"status": "ok"}
+
+
+def test_meta_shape(monkeypatch):
+    monkeypatch.setattr(warehouse, "run_sql", lambda sql: [{"a": 1}])
+    r = client.get("/api/meta")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == {"skus", "weeks", "parameters"}
+
+
+def test_supply_returns_bare_list(monkeypatch):
+    monkeypatch.setattr(warehouse, "run_sql", lambda sql: [_SUPPLY_ROW])
+    r = client.get("/api/supply")
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body, list)
+    assert body[0]["colour"] == "dark_blue"
+    assert body[0]["severity"] == 6
+
+
+def test_production_maps_flags_and_counts_changeovers(monkeypatch):
+    rows = [
+        dict(_PROD_ROW),
+        {**_PROD_ROW, "week_key": "2026-W36", "is_changeover": True, "r3": True, "over_units": 5000},
+    ]
+    monkeypatch.setattr(warehouse, "run_sql", lambda sql: rows)
+    monkeypatch.setattr(warehouse, "effective_plan_rows", lambda scenario: _PLAN_ROWS)
+    r = client.get("/api/production")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["changeovers"] == 1
+    assert set(body["week_flags"]["2026-W35"]) == {"R1", "R2", "R3", "R4", "no_rule", "over"}
+    assert body["week_flags"]["2026-W36"]["R3"] is True
+    assert body["week_flags"]["2026-W36"]["over"] == 5000
+    assert body["week_totals"]["2026-W35"] == 450000.0
+    assert body["rows"] == _PLAN_ROWS
+
+
+def test_summary_shape(monkeypatch):
+    monkeypatch.setattr(warehouse, "run_sql", lambda sql: _COLOUR_ROWS)
+    r = client.get("/api/summary")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["counts"]["dark_blue"] == 400
+    assert set(body["original_vs_plan"]) == {"original", "working"}
+
+
+def test_edit_rejects_locked_week(monkeypatch):
+    monkeypatch.setattr(warehouse, "week_is_locked", lambda wk: True)
+    r = client.post("/api/plan/edit", json={
+        "sku_code": "60444", "week_key": "2026-W35", "planned_qty": 5.0,
+    })
+    assert r.status_code == 409
+
+
+def test_edit_404_unknown_week(monkeypatch):
+    monkeypatch.setattr(warehouse, "week_is_locked", lambda wk: None)
+    r = client.post("/api/plan/edit", json={
+        "sku_code": "60444", "week_key": "2099-W99", "planned_qty": 5.0,
+    })
+    assert r.status_code == 404
+
+
+def test_edit_clamps_negative_and_merges_then_recomputes(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(warehouse, "week_is_locked", lambda wk: False)
+    monkeypatch.setattr(warehouse, "overlay_merge", lambda scenario, changes: captured.update(scenario=scenario, changes=changes))
+    monkeypatch.setattr(m, "_supply", lambda scenario: [_SUPPLY_ROW])
+    monkeypatch.setattr(m, "_production", lambda scenario: m.ProductionResponse(rows=_PLAN_ROWS, week_totals={"2026-W35": 1.0}, week_flags={}, changeovers=0))
+    monkeypatch.setattr(m, "_summary", lambda scenario: m.SummaryResponse(counts={"green": 572}, original_vs_plan=m.SummaryOrigVsPlan(original={}, working={})))
+    r = client.post("/api/plan/edit", json={
+        "sku_code": "60444", "week_key": "2026-W40", "planned_qty": -99.0, "scenario": "working",
+    })
+    assert r.status_code == 200
+    assert captured["changes"][0]["planned_qty"] == 0.0  # negative clamped
+    body = r.json()
+    assert isinstance(body["supply"], list)
+    assert "production" in body and "summary" in body
+
+
+def test_save_calls_overlay_save(monkeypatch):
+    called = {}
+    monkeypatch.setattr(warehouse, "overlay_save", lambda scenario: called.setdefault("s", scenario))
+    r = client.post("/api/plan/save", json={"scenario": "working"})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert called["s"] == "working"
+
+
+def test_discard_calls_overlay_discard(monkeypatch):
+    called = {}
+    monkeypatch.setattr(warehouse, "overlay_discard", lambda scenario: called.setdefault("s", scenario))
+    r = client.post("/api/plan/discard", json={"scenario": "working"})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert called["s"] == "working"
+
+
+def test_autofix_runs_and_returns_report(monkeypatch):
+    import backend.autofix as af
+    monkeypatch.setattr(af, "strict_trim", lambda scenario: {"weeks_changed": 3, "cells_zeroed": 10})
+    monkeypatch.setattr(m, "_supply", lambda scenario: [])
+    monkeypatch.setattr(m, "_production", lambda scenario: m.ProductionResponse(rows=[], week_totals={}, week_flags={}, changeovers=0))
+    monkeypatch.setattr(m, "_summary", lambda scenario: m.SummaryResponse(counts={}, original_vs_plan=m.SummaryOrigVsPlan(original={}, working={})))
+    r = client.post("/api/autofix", json={"scenario": "working"})
+    assert r.status_code == 200
+    assert r.json()["report"]["weeks_changed"] == 3
+
+
+def test_upload_503_without_pipeline(monkeypatch):
+    monkeypatch.setattr(m.settings, "pipeline_id", "")
+    r = client.post("/api/upload", files={"file": ("x.xlsx", b"data", "application/octet-stream")})
+    assert r.status_code == 503
+
+
+def _stub_grids(monkeypatch):
+    monkeypatch.setattr(m, "_supply", lambda scenario: [_SUPPLY_ROW])
+    monkeypatch.setattr(m, "_production", lambda scenario: m.ProductionResponse(rows=[], week_totals={}, week_flags={}, changeovers=0))
+    monkeypatch.setattr(m, "_summary", lambda scenario: m.SummaryResponse(counts={}, original_vs_plan=m.SummaryOrigVsPlan(original={}, working={})))
+
+
+def test_reset_week_discards_week_overlay_and_recomputes(monkeypatch):
+    called = {}
+    monkeypatch.setattr(warehouse, "overlay_discard_week", lambda scenario, wk: called.update(s=scenario, wk=wk))
+    _stub_grids(monkeypatch)
+    r = client.post("/api/plan/reset-week", json={"week_key": "2026-W40", "scenario": "working"})
+    assert r.status_code == 200
+    assert called == {"s": "working", "wk": "2026-W40"}
+    assert isinstance(r.json()["supply"], list)
+
+
+def test_recalc_returns_grids(monkeypatch):
+    _stub_grids(monkeypatch)
+    r = client.post("/api/recalc", json={"scenario": "working"})
+    assert r.status_code == 200
+    assert {"supply", "production", "summary"} <= set(r.json())
+    r2 = client.get("/api/recalc")
+    assert r2.status_code == 200
+
+
+def test_put_parameter_updates_silver_and_recomputes(monkeypatch):
+    called = {}
+    monkeypatch.setattr(warehouse, "update_parameter", lambda name, value: called.update(name=name, value=value))
+    _stub_grids(monkeypatch)
+    r = client.put("/api/parameters", json={"name": "cap_400ml_3_sku", "value": 590000.0})
+    assert r.status_code == 200
+    assert called == {"name": "cap_400ml_3_sku", "value": 590000.0}
+
+
+def test_put_week_updates_only_provided_fields(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(warehouse, "update_week", lambda wk, fields: captured.update(wk=wk, fields=fields))
+    _stub_grids(monkeypatch)
+    r = client.put("/api/weeks", json={"week_key": "2026-W40", "maintenance_type": "Full"})
+    assert r.status_code == 200
+    assert captured["fields"] == {"maintenance_type": "Full"}  # is_locked/note omitted
+
+
+def test_put_sku_updates_priority(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(warehouse, "update_sku", lambda code, fields: captured.update(code=code, fields=fields))
+    _stub_grids(monkeypatch)
+    r = client.put("/api/skus", json={"sku_code": "60444", "priority": 2})
+    assert r.status_code == 200
+    assert captured["fields"] == {"priority": 2}
+
+
+def test_coerce_types():
+    assert warehouse._coerce("true", "BOOLEAN") is True
+    assert warehouse._coerce("false", "BOOLEAN") is False
+    assert warehouse._coerce("42", "INT") == 42
+    assert warehouse._coerce("3.5", "DOUBLE") == 3.5
+    assert warehouse._coerce(None, "DOUBLE") is None
+    assert warehouse._coerce("dark_red", "STRING") == "dark_red"

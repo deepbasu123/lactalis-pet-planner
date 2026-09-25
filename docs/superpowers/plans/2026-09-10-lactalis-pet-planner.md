@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Python 3.11 runtime (Databricks Apps). Pin all deps in `requirements.txt`.
-- Catalog/schema: `deep_test_1_catalog.lactalis_pet_planner`. Databricks profile for local dev: `deep-test-1`.
+- Catalog/schema: `main.lactalis_pet_planner`. Databricks profile for local dev: `DEFAULT`.
 - Brand hex: Lactalis blue `#004B85`, sky `#5BC5F2`, white background. Traffic-light hex are fixed in the spec colour table and owned server-side (engine emits colour names; frontend maps name to hex).
 - Traffic-light colour names (canonical): `dark_blue`, `light_blue`, `green`, `amber`, `red`, `dark_red`, `black`.
 - Engine defaults (open decisions): demand = max(forecast, sales_order); opening stock from `opening_stock`; ISO-8601 weeks; MLOR populated for all 11 SKUs; amber at <1 week cover; QA hold = 2 weeks. All read from the `parameter` table where a param exists.
@@ -99,7 +99,7 @@ def test_health_ok():
     assert r.json() == {"status": "ok"}
 ```
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_health.py -v` → FAIL (import error).
-- [ ] **Step 3: Implement** `backend/config.py` (pydantic `BaseSettings` reading env `PET_CATALOG`, `PET_SCHEMA`, `DATABRICKS_WAREHOUSE_ID`, `PET_GENIE_SPACE_ID`, `DATABRICKS_HOST`, with local defaults `deep_test_1_catalog` / `lactalis_pet_planner`) and `backend/main.py` (create `app`, add `/api/health`, mount `frontend/dist` as static at `/` when it exists).
+- [ ] **Step 3: Implement** `backend/config.py` (pydantic `BaseSettings` reading env `PET_CATALOG`, `PET_SCHEMA`, `DATABRICKS_WAREHOUSE_ID`, `PET_GENIE_SPACE_ID`, `DATABRICKS_HOST`, with local defaults `main` / `lactalis_pet_planner`) and `backend/main.py` (create `app`, add `/api/health`, mount `frontend/dist` as static at `/` when it exists).
 - [ ] **Step 4: Run to verify it passes** — `pytest tests/test_health.py -v` → PASS.
 - [ ] **Step 5: Scaffold frontend** — `npm create vite@latest frontend -- --template react-ts` (or hand-write the listed files); `App.tsx` renders the header text "PET Line Planner" and an empty tab bar. `requirements.txt` pins: `fastapi==0.115.*`, `uvicorn[standard]==0.30.*`, `pandas==2.2.*`, `databricks-sdk==0.30.*`, `databricks-sql-connector==3.*`, `pydantic-settings==2.*`, `pytest==8.*`, `httpx==0.27.*`.
 - [ ] **Step 6: Commit** — `git add -A && git commit -m "feat: scaffold backend + frontend, health endpoint"`.
@@ -340,9 +340,9 @@ def test_summary_counts_all_bands_present():
   - `db.merge_plan_lines(rows: list[dict]) -> int` (MERGE into `plan_line` on sku_code+week_key, returns rows written).
   - `db.write_snapshot(df: pandas.DataFrame) -> None` (overwrite `projection_snapshot`).
   - `db._merge_sql(rows) -> str` (pure, tested).
-- Auth: use `databricks.sdk.WorkspaceClient()` which resolves the injected SP env when deployed and the `deep-test-1` profile locally (via `DATABRICKS_CONFIG_PROFILE`). Statement execution against `Settings.warehouse_id`.
+- Auth: use `databricks.sdk.WorkspaceClient()` which resolves the injected SP env when deployed and the `DEFAULT` profile locally (via `DATABRICKS_CONFIG_PROFILE`). Statement execution against `Settings.warehouse_id`.
 
-- [ ] **Step 1: Write failing test** for `_merge_sql` (asserts it targets `deep_test_1_catalog.lactalis_pet_planner.plan_line`, contains `MERGE`, `WHEN MATCHED`, and escapes numeric values). 
+- [ ] **Step 1: Write failing test** for `_merge_sql` (asserts it targets `main.lactalis_pet_planner.plan_line`, contains `MERGE`, `WHEN MATCHED`, and escapes numeric values). 
 - [ ] **Step 2: Run to verify fail**.
 - [ ] **Step 3: Implement** read via `databricks-sql-connector` (cursor -> `fetchall_arrow().to_pandas()`), MERGE/overwrite via SDK `statement_execution.execute_statement(wait_timeout="30s")` then poll per project note (wait 5-50s then GET). Build SQL with parameter-safe numeric formatting.
 - [ ] **Step 4: Run to verify pass**.
@@ -488,7 +488,7 @@ def test_summary_counts_all_bands_present():
 - Produces: `create_genie.ensure_space(client, catalog, schema, warehouse_id) -> str` (space id). Idempotent: reuse by title if present. Uses the corrected Genie space API shape from project notes (warehouse_id/title top-level; serialized_space a minimal JSON string; tables patched via `data_sources.tables[].identifier`, snake_case, sorted alphabetically).
 
 - [ ] **Step 1: Implement** creation over `sku, week, demand, plan_line, projection_snapshot` with curated instructions (glossary: SOH, cover weeks, QA hold, colour meanings) and note that sample questions are UI-only.
-- [ ] **Step 2: Manual verify** — run against `deep-test-1`, then test via start-conversation + poll that a known question returns sensible SQL. Record the space id.
+- [ ] **Step 2: Manual verify** — run against `DEFAULT`, then test via start-conversation + poll that a known question returns sensible SQL. Record the space id.
 - [ ] **Step 3: Commit** — `git commit -m "feat: Genie space provisioning script"`.
 
 ---
@@ -503,7 +503,7 @@ def test_summary_counts_all_bands_present():
 - `deploy.py` (idempotent, ordered): create catalog/schema/tables, load synthetic data, ensure Genie space, create/deploy the app, apply SP grants (USE CATALOG/SCHEMA, SELECT, MODIFY on the schema; CAN_USE on the warehouse; CAN RUN on the Genie space), then health-check the app URL and print it.
 
 - [ ] **Step 1: Implement** `deploy.py` using the databricks CLI/SDK; follow the fe-databricks-tools databricks-apps skill for the app create/deploy specifics at execution time.
-- [ ] **Step 2: Deploy to `deep-test-1`**; confirm data row counts, app returns `/api/health` ok, SP has grants, Genie answers in-app.
+- [ ] **Step 2: Deploy to `DEFAULT`**; confirm data row counts, app returns `/api/health` ok, SP has grants, Genie answers in-app.
 - [ ] **Step 3: Commit** — `git commit -m "feat: app packaging, deploy script, grants"`.
 
 ---

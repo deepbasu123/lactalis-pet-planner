@@ -1,0 +1,38 @@
+# Databricks Asset Bundle for the Lactalis PET Line Planner medallion re-architecture.
+#
+# This bundle owns the Lakeflow Declarative Pipeline (Excel -> Bronze -> Silver ->
+# Gold). The Unity Catalog schemas, the landing Volume, the app-owned plan_overlay
+# table, the seed, the Databricks App, grants, and the Genie space are handled by
+# scripts/deploy.py (which shells out to `databricks bundle deploy` for the pipeline),
+# so the whole thing stays a single `python scripts/deploy.py --profile ...` command.
+bundle:
+  name: lactalis-pet-medallion
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog to deploy into.
+    default: main
+  bronze_schema:
+    default: lactalis_pet_bronze
+  silver_schema:
+    default: lactalis_pet_silver
+  gold_schema:
+    default: lactalis_pet_gold
+  warehouse_id:
+    description: Serverless SQL warehouse the app uses for interactive recompute.
+    default: <warehouse_id>
+
+targets:
+  dev:
+    default: true
+    mode: development
+    # Keep resource names literal (no "[dev user]" / dev_ prefixes) so the app's
+    # env vars and the pipeline name stay stable across deploys.
+    presets:
+      name_prefix: ''
+      pipelines_development: true
+    workspace:
+      profile: DEFAULT

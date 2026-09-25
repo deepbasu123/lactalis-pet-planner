@@ -1,0 +1,96 @@
+/* ArchitectureView — medallion data-flow diagram. On-brand, sharp corners. */
+
+.arch-view {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: var(--sp-2) 0 var(--sp-8);
+  animation: arch-fade 260ms var(--ease-base) both;
+}
+@keyframes arch-fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.arch-banner {
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--active-bg);
+  border-left: 3px solid var(--lac-blue);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  margin-bottom: var(--sp-5);
+}
+.arch-banner strong { color: var(--lac-blue); }
+
+.arch-svg-wrap {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  box-shadow: var(--shadow-sm);
+  padding: var(--sp-4);
+}
+.arch-svg { width: 100%; height: auto; display: block; }
+
+.arch-lane {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  fill: var(--text-muted);
+  font-family: var(--font-sans);
+}
+
+/* nodes */
+.arch-node rect {
+  fill: var(--bg);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.arch-node-title {
+  text-anchor: middle;
+  font-size: 13px;
+  font-weight: 600;
+  fill: var(--text-primary);
+  font-family: var(--font-sans);
+}
+.arch-node-sub {
+  text-anchor: middle;
+  font-size: 10.5px;
+  fill: var(--text-muted);
+  font-family: var(--font-sans);
+}
+
+.arch-node.in     rect { fill: var(--surface-1); stroke: var(--border-strong); }
+.arch-node.uc     rect { fill: #f2f7fc; stroke: var(--lac-sky); }
+.arch-node.compute rect { fill: #eef4fb; stroke: var(--lac-blue); stroke-width: 1.5; }
+.arch-node.out    rect { fill: var(--surface-1); stroke: var(--border-strong); }
+
+.arch-node.bronze rect { fill: #f8efe2; stroke: #b07219; stroke-width: 1.5; }
+.arch-node.silver rect { fill: #eef1f5; stroke: #8b98a8; stroke-width: 1.5; }
+.arch-node.gold   rect { fill: #fbf3d9; stroke: #d4a017; stroke-width: 2.5; }
+.arch-node.gold .arch-node-title { fill: #7a5a00; }
+
+.arch-arrow { stroke: var(--border-strong); stroke-width: 1.4; fill: none; }
+.arch-arrowhead { fill: var(--border-strong); }
+
+/* notes */
+.arch-notes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--sp-4);
+  margin-top: var(--sp-5);
+}
+.arch-note {
+  border: 1px solid var(--border-light);
+  border-top: 3px solid var(--lac-blue);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  padding: var(--sp-4);
+}
+.arch-note h4 { margin: 0 0 var(--sp-2); color: var(--lac-blue); font-size: var(--text-md); }
+.arch-note p  { margin: 0; color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.5; }
+.arch-note code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--surface-2);
+  padding: 1px 4px;
+  border-radius: 2px;
+  color: var(--text-primary);
+}

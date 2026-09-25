@@ -8,12 +8,18 @@ command:
 
 env:
   - name: PET_CATALOG
-    value: "deep_test_1_catalog"
-  - name: PET_SCHEMA
-    value: "lactalis_pet_planner"
+    value: "main"
+  - name: PET_SILVER_SCHEMA
+    value: "lactalis_pet_silver"
+  - name: PET_GOLD_SCHEMA
+    value: "lactalis_pet_gold"
   - name: DATABRICKS_WAREHOUSE_ID
-    value: ""
+    value: "<warehouse_id>"
+  - name: PET_WAREHOUSE_ID
+    value: "<warehouse_id>"
+  - name: PET_PIPELINE_ID
+    value: "<pipeline_id>"
+  - name: PET_VOLUME
+    value: "main.lactalis_pet_bronze.landing"
   - name: PET_GENIE_SPACE_ID
-    value: ""
-  - name: PET_LIVE
-    value: "0"
+    value: "<genie_space_id>"
