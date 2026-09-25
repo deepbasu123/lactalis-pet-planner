@@ -1,0 +1,34 @@
+# Lakeflow Declarative Pipeline: Excel -> Bronze -> Silver -> Gold.
+# Source is medallion-aware (fully-qualified names publish to the three schemas).
+# The Gold layer imports the rule SQL from medallion.gold_sql, so the pipeline
+# and the app's interactive recompute run identical logic.
+resources:
+  pipelines:
+    pet_pipeline:
+      name: lactalis-pet-medallion
+      catalog: ${var.catalog}
+      # Default publishing schema; Bronze/Gold tables use fully-qualified names.
+      schema: ${var.silver_schema}
+      serverless: true
+      photon: true
+      channel: PREVIEW      # latest Spark — needed for recursive-CTE support in Gold
+      continuous: false
+      development: true
+      libraries:
+        - file:
+            path: ../pipeline/pet_pipeline.py
+      configuration:
+        pet.catalog: ${var.catalog}
+        pet.bronze_schema: ${var.bronze_schema}
+        pet.silver_schema: ${var.silver_schema}
+        pet.gold_schema: ${var.gold_schema}
+        pet.volume_path: /Volumes/${var.catalog}/${var.bronze_schema}/landing/uploads
+        pipelines.numUpdateRetryAttempts: '0'
+        pipelines.maxFlowRetryAttempts: '0'
+      environment:
+        dependencies:
+          - openpyxl
+          - pandas
+      permissions:
+        - level: CAN_VIEW
+          group_name: users
