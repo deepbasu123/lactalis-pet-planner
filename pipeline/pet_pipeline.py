@@ -25,10 +25,12 @@ import os
 import sys
 from functools import lru_cache
 
-# Make the repo root importable so `medallion` resolves regardless of where the
-# pipeline mounts this file.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _REPO_ROOT not in sys.path:
+# The pipeline source executes as a notebook cell, so `__file__` is undefined.
+# The DAB passes the synced bundle files root as pet.repo_root
+# (= ${workspace.file_path}); put it on sys.path so the sibling `medallion`
+# package imports cleanly. `spark` is provided by the pipeline runtime.
+_REPO_ROOT = spark.conf.get("pet.repo_root", "")  # noqa: F821
+if _REPO_ROOT and _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from pyspark import pipelines as dp

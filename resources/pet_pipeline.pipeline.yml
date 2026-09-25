@@ -18,6 +18,7 @@ resources:
         - file:
             path: ../pipeline/pet_pipeline.py
       configuration:
+        pet.repo_root: ${workspace.file_path}
         pet.catalog: ${var.catalog}
         pet.bronze_schema: ${var.bronze_schema}
         pet.silver_schema: ${var.silver_schema}
