@@ -107,7 +107,7 @@ def supply_select(
     Columns: sku_code, week_key, horizon_index, opening, recv, prod, demand,
     raw, close, cover_weeks, severity, colour, display_value, is_lost_sale.
     """
-    return f"""WITH RECURSIVE
+    return f"""WITH
 {_params_cte(s)},
 {_effective_plan_cte(s, scenario, plan_col, use_overlay)},
 base AS (
@@ -138,25 +138,39 @@ recv AS (
 opening AS (
   SELECT sku_code, CAST(opening_ea AS DOUBLE) AS opening_ea FROM {s.t('opening_stock')}
 ),
-proj (sku_code, hi, week_key, demand, recv, prod, max_cover_weeks, opening, raw, close) AS (
-  -- Anchor: first week opens from opening stock.
+-- RULE-008/009/010 projection via the closed-form (Lindley) reflected running
+-- sum: close at week i = C_i minus min(0, running-min of C up to i), where
+-- C_i = opening + cumulative(recv - demand). Pure window functions, no
+-- recursion -- proven equal to the stepwise recurrence
+-- (tests/test_engine.py::test_lindley_closed_form_matches_stepwise) and far
+-- faster than a 52-iteration recursive CTE on Spark/DBSQL.
+walk AS (
   SELECT
     r.sku_code, r.hi, r.week_key, r.demand, r.recv, r.prod, r.max_cover_weeks,
-    CAST(o.opening_ea AS DOUBLE)                                   AS opening,
-    CAST(o.opening_ea + r.recv - r.demand AS DOUBLE)               AS raw,
-    CAST(GREATEST(0.0, o.opening_ea + r.recv - r.demand) AS DOUBLE) AS close
+    CAST(o.opening_ea AS DOUBLE) AS opening0,
+    CAST(o.opening_ea + SUM(r.recv - r.demand) OVER (
+      PARTITION BY r.sku_code ORDER BY r.hi
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS DOUBLE) AS c
   FROM recv r
   JOIN opening o ON o.sku_code = r.sku_code
-  WHERE r.hi = 1
-  UNION ALL
-  -- RULE-009 / RULE-010: close = max(0, prior close + receipts - demand).
+),
+proj0 AS (
   SELECT
-    r.sku_code, r.hi, r.week_key, r.demand, r.recv, r.prod, r.max_cover_weeks,
-    CAST(p.close AS DOUBLE)                                        AS opening,
-    CAST(p.close + r.recv - r.demand AS DOUBLE)                    AS raw,
-    CAST(GREATEST(0.0, p.close + r.recv - r.demand) AS DOUBLE)     AS close
-  FROM proj p
-  JOIN recv r ON r.sku_code = p.sku_code AND r.hi = p.hi + 1
+    w.sku_code, w.hi, w.week_key, w.demand, w.recv, w.prod, w.max_cover_weeks, w.opening0,
+    CAST(w.c - LEAST(0.0, w.opening0, MIN(w.c) OVER (
+      PARTITION BY w.sku_code ORDER BY w.hi
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    )) AS DOUBLE) AS close
+  FROM walk w
+),
+proj AS (
+  SELECT
+    p.sku_code, p.hi, p.week_key, p.demand, p.recv, p.prod, p.max_cover_weeks, p.close,
+    CAST(COALESCE(LAG(p.close) OVER (PARTITION BY p.sku_code ORDER BY p.hi), p.opening0) AS DOUBLE) AS opening,
+    CAST(COALESCE(LAG(p.close) OVER (PARTITION BY p.sku_code ORDER BY p.hi), p.opening0)
+         + p.recv - p.demand AS DOUBLE) AS raw
+  FROM proj0 p
 ),
 fwd AS (
   SELECT
