@@ -9,6 +9,8 @@ import SkuPriority from './components/SkuPriority';
 import WeekConfig from './components/WeekConfig';
 import TrafficLightSummary from './components/TrafficLightSummary';
 import GeniePanel from './components/GeniePanel';
+import UploadWorkbook from './components/UploadWorkbook';
+import ArchitectureView from './components/ArchitectureView';
 import { fetchConfig } from './api';
 import type { ConfigResponse } from './api';
 
@@ -77,6 +79,16 @@ const TABS = [
     id: 'summary' as const,
     label: 'Traffic Light Summary',
     desc: 'Traffic-light colour-band distribution across the full 52-week horizon. Original (SNP baseline) versus Production Plan comparison, with total-volume delta.',
+  },
+  {
+    id: 'upload' as const,
+    label: 'Upload Workbook',
+    desc: 'Drag and drop a PET Traffic Lights .xlsx. The file lands in a Unity Catalog Volume and a Lakeflow Declarative Pipeline processes it Bronze to Silver to Gold; nothing is parsed in the browser.',
+  },
+  {
+    id: 'architecture' as const,
+    label: 'Architecture',
+    desc: 'How the medallion backend computes every projection, colour and breach; the app is a thin serving layer.',
   },
 ] as const;
 
@@ -290,6 +302,10 @@ export default function App() {
           />
         ) : activeTab === 'summary' ? (
           <TrafficLightSummary dataVersion={dataVersion} />
+        ) : activeTab === 'upload' ? (
+          <UploadWorkbook onComplete={bumpDataVersion} />
+        ) : activeTab === 'architecture' ? (
+          <ArchitectureView />
         ) : (
           <PlaceholderPanel
             title={activeTabDef.label}

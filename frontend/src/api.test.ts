@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filenameFromContentDisposition } from './api';
+import { filenameFromContentDisposition, normalizeSupply } from './api';
 
 describe('filenameFromContentDisposition', () => {
   it('extracts a quoted filename', () => {
@@ -31,5 +31,24 @@ describe('filenameFromContentDisposition', () => {
     expect(filenameFromContentDisposition(header, 'fallback.xlsx')).toBe(
       'pet line planner export.xlsx',
     );
+  });
+});
+
+describe('normalizeSupply', () => {
+  it('passes a bare array of rows through unchanged', () => {
+    const rows = [{ sku_code: 'A', week_key: '2026-W35' }];
+    expect(normalizeSupply(rows)).toEqual(rows);
+  });
+
+  it('unwraps a { rows: [...] } envelope', () => {
+    const rows = [{ sku_code: 'A', week_key: '2026-W35' }];
+    expect(normalizeSupply({ rows })).toEqual(rows);
+  });
+
+  it('returns [] for null, undefined, or an unexpected shape', () => {
+    expect(normalizeSupply(null)).toEqual([]);
+    expect(normalizeSupply(undefined)).toEqual([]);
+    expect(normalizeSupply({ nope: 1 })).toEqual([]);
+    expect(normalizeSupply(42)).toEqual([]);
   });
 });
