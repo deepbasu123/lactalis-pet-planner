@@ -554,29 +554,43 @@ export default function ProductionGrid({
     setFixing(true);
     try {
       const res = await autoFixBreaches();
-      setDirtyMap((prev) => {
-        const n = { ...prev };
-        for (const c of res.changed) n[`${c.sku_code}|${c.week_key}`] = c.planned_qty;
-        return n;
-      });
-      setEditedKeys((prev) => {
-        const n = new Set(prev);
-        for (const c of res.changed) n.add(`${c.sku_code}|${c.week_key}`);
-        return n;
-      });
+      const changed = res.changed ?? [];
+      // Classic backend returns the changed cells; mirror them into the dirty
+      // overlay so they show as unsaved. The re-architected backend stages the
+      // fix into the Silver overlay server-side and returns no cell list — the
+      // silent dataVersion refetch below then surfaces the recomputed plan.
+      if (changed.length > 0) {
+        setDirtyMap((prev) => {
+          const n = { ...prev };
+          for (const c of changed) n[`${c.sku_code}|${c.week_key}`] = c.planned_qty;
+          return n;
+        });
+        setEditedKeys((prev) => {
+          const n = new Set(prev);
+          for (const c of changed) n.add(`${c.sku_code}|${c.week_key}`);
+          return n;
+        });
+      }
       onDataChange();
 
       const r = res.report;
-      const dropped = Math.round(r.volume_dropped).toLocaleString();
-      const locked = r.locked_weeks_skipped;
-      setAutofixToast(
-        `Auto-fixed ${r.weeks_changed} week${r.weeks_changed !== 1 ? 's' : ''}: ` +
-        `${res.changed.length} cells changed, ${dropped} EA dropped. ` +
-        (locked > 0
-          ? `${locked} locked week${locked !== 1 ? 's' : ''} left unchanged. `
-          : '') +
-        `Review below, then Save or Discard.`,
-      );
+      if (r) {
+        const dropped = Math.round(r.volume_dropped).toLocaleString();
+        const locked = r.locked_weeks_skipped;
+        setAutofixToast(
+          `Auto-fixed ${r.weeks_changed} week${r.weeks_changed !== 1 ? 's' : ''}: ` +
+          `${changed.length} cells changed, ${dropped} EA dropped. ` +
+          (locked > 0
+            ? `${locked} locked week${locked !== 1 ? 's' : ''} left unchanged. `
+            : '') +
+          `Review below, then Save or Discard.`,
+        );
+      } else {
+        setAutofixToast(
+          'Auto-fix applied by the backend: strict-trim to one pack size and the ' +
+          'top 3 priority SKUs per week, respecting locked weeks. Review the updated plan, then Save or Discard.',
+        );
+      }
       if (autofixTimerRef.current) clearTimeout(autofixTimerRef.current);
       autofixTimerRef.current = setTimeout(() => setAutofixToast(null), 9000);
     } catch (err) {

@@ -1,0 +1,141 @@
+/* UploadWorkbook — drag-drop + live medallion pipeline progress.
+   Matches the Lactalis theme: sharp corners, blue #004B85 / sky #5BC5F2. */
+
+.upload-panel {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: var(--sp-2) 0 var(--sp-8);
+  animation: upl-fade-in 260ms var(--ease-base) both;
+}
+
+@keyframes upl-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.upload-intro h2 {
+  color: var(--lac-blue);
+  font-size: var(--text-xl);
+  margin: 0 0 var(--sp-2);
+}
+.upload-intro p {
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: 1.55;
+  margin: 0 0 var(--sp-5);
+  max-width: 68ch;
+}
+
+/* ── Dropzone ─────────────────────────────────────────────── */
+.dropzone {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-6);
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--ease-base), background var(--ease-base), transform var(--ease-fast);
+}
+.dropzone:hover { background: var(--hover-bg); border-color: var(--lac-sky); }
+.dropzone:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.dropzone--drag {
+  border-color: var(--lac-blue);
+  background: var(--active-bg);
+  transform: scale(1.006);
+}
+.dropzone--busy { cursor: progress; opacity: 0.85; }
+
+.dropzone-icon { color: var(--lac-blue); flex: 0 0 auto; }
+.dropzone-text { display: flex; flex-direction: column; gap: 2px; }
+.dropzone-text strong { color: var(--text-primary); font-size: var(--text-md); }
+.dropzone-text span { color: var(--text-muted); font-size: var(--text-sm); }
+
+/* ── Medallion flow ───────────────────────────────────────── */
+.medallion-flow {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  flex-wrap: wrap;
+  margin-top: var(--sp-6);
+}
+.flow-seg { display: contents; }
+
+.flow-node {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 120px;
+  flex: 1 1 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--border-strong);
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--ease-base), box-shadow var(--ease-base), background var(--ease-base);
+}
+.flow-node-kicker { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.flow-node-title  { font-size: var(--text-md); font-weight: 600; color: var(--text-primary); }
+.flow-node-desc   { font-size: var(--text-xs); color: var(--text-muted); line-height: 1.35; }
+
+.flow-node--source { flex: 0 0 auto; min-width: 96px; }
+
+/* medallion accent colours on the top border */
+.flow-node--bronze { border-top-color: #b07219; }
+.flow-node--silver { border-top-color: #8b98a8; }
+.flow-node--gold   { border-top-color: #d4a017; }
+
+/* stage states */
+.flow-node.is-pending { opacity: 0.5; }
+.flow-node.is-done {
+  border-color: var(--lac-blue);
+  box-shadow: inset 0 0 0 1px rgba(0, 75, 133, 0.12);
+}
+.flow-node.is-done .flow-node-kicker::after { content: ' ✓'; color: var(--lac-blue); }
+.flow-node.is-active {
+  border-color: var(--lac-sky);
+  box-shadow: 0 0 0 2px rgba(91, 197, 242, 0.35);
+  animation: flow-pulse 1.4s ease-in-out infinite;
+}
+@keyframes flow-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(91, 197, 242, 0.30); }
+  50%      { box-shadow: 0 0 0 5px rgba(91, 197, 242, 0.12); }
+}
+
+.flow-arrow {
+  align-self: center;
+  width: 22px;
+  height: 2px;
+  background: var(--border-strong);
+  position: relative;
+  flex: 0 0 auto;
+  margin: 0 2px;
+}
+.flow-arrow::after {
+  content: '';
+  position: absolute;
+  right: -1px; top: -3px;
+  border-left: 6px solid var(--border-strong);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+}
+
+/* ── Status message ───────────────────────────────────────── */
+.upload-msg {
+  margin-top: var(--sp-5);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-base);
+  border-left: 3px solid var(--border-strong);
+  animation: upl-fade-in 200ms var(--ease-base) both;
+}
+.upload-msg--info  { background: var(--surface-1); border-left-color: var(--lac-sky); color: var(--text-secondary); }
+.upload-msg--ok    { background: #eaf6ee; border-left-color: #2E9E5B; color: #1c5233; }
+.upload-msg--error { background: #fdecea; border-left-color: #E1382D; color: #8a1c14; }
+
+@media (max-width: 720px) {
+  .medallion-flow { flex-direction: column; }
+  .flow-arrow { transform: rotate(90deg); margin: 4px 0; align-self: flex-start; margin-left: 40px; }
+}
