@@ -1,0 +1,132 @@
+---
+title: Lactalis NOVA PET Line Planner - Databricks Medallion Architecture
+---
+%%{init: {"htmlLabels": false, "flowchart": {"curve": "basis", "nodeSpacing": 40, "rankSpacing": 65, "padding": 20}}}%%
+flowchart LR
+
+    %% ================= SOURCE =================
+    subgraph SRC["SOURCE"]
+        PLANNER(["Supply Planner"])
+        SYNTH(["Synthetic Workbook<br/>Generator, demo<br/>data seed"])
+    end
+
+    %% ================= GOVERNANCE WRAPPER: Unity Catalog =================
+    %% Contains every catalog, schema, volume and table in the diagram,
+    %% drawn as an outer container so governance reads as an underlying
+    %% layer rather than a floating node.
+    subgraph UCWRAP["UNITY CATALOG, governs every catalog,<br/>schema, volume and table below"]
+
+        subgraph LAND["LANDING"]
+            VOL[("UC Volume<br/>deep_test_1_catalog.<br/>lactalis_pet_bronze.landing<br/>uploads/")]
+        end
+
+        subgraph PIPE["LAKEFLOW DECLARATIVE<br/>PIPELINE, batch engine"]
+            subgraph BRZ["BRONZE<br/>lactalis_pet_bronze"]
+                BZT["Raw workbook rows,<br/>openpyxl parse plus<br/>ingest metadata"]
+            end
+
+            subgraph SIL["SILVER, lactalis_pet_silver<br/>conformed, typed,<br/>DQ-checked"]
+                SVT["sku, week,<br/>parameter, demand,<br/>plan_line,<br/>opening_stock<br/>Expectations:<br/>week alignment,<br/>pack-size,<br/>active SKUs"]
+            end
+
+            subgraph GLD["GOLD<br/>lactalis_pet_gold"]
+                GRULES[["21 Business Rules, SQL<br/>projection: stock<br/>projection, 2-wk QA<br/>lag, floor-at-zero<br/>carryforward<br/>week_capacity:<br/>pack-size, SKU-count,<br/>ceiling, maintenance<br/>summary"]]
+                GSNAP[("projection_snapshot<br/>run-stamped")]
+                GRULES --> GSNAP
+            end
+
+            BZT --> SVT
+            SVT -->|"batch, Lakeflow<br/>pipeline: runs<br/>Gold rule SQL"| GRULES
+        end
+
+        %% App-writable overlay: same silver schema, not pipeline-managed
+        OVERLAY[("silver.plan_overlay<br/>app-writable edits,<br/>not pipeline-managed")]
+    end
+
+    %% ================= INTERACTIVE RECOMPUTE ENGINE =================
+    WH{{"Serverless SQL<br/>Warehouse, interactive<br/>recompute, ~1-2 sec,<br/>invoked by the App<br/>on each edit"}}
+
+    %% ================= CONSUMPTION: app plus Genie plus AI/BI =================
+    subgraph CONS["CONSUMPTION"]
+        subgraph APP["DATABRICKS APP<br/>React + FastAPI, thin<br/>serving layer, zero<br/>business logic"]
+            UI["React UI"]
+            API["FastAPI Backend"]
+            GENIE(["Genie<br/>proxied, embedded<br/>in UI"])
+            UI --> API
+            API --> GENIE
+        end
+        AIBI["AI/BI Dashboard"]
+    end
+
+    %% ================= EMPHASIS NOTE =================
+    NOTE1["Same rule SQL,<br/>two callers:<br/>pipeline batch plus<br/>warehouse interactive"]
+
+    %% ================= EDGES: source =================
+    PLANNER -->|"uploads PET<br/>Traffic Lights<br/>.xlsx workbook"| UI
+    SYNTH -->|"seeds demo<br/>workbook direct to<br/>landing, same<br/>medallion path,<br/>no UI"| VOL
+
+    %% ================= EDGES: upload, write, trigger, ingest =================
+    %% The one accepted back-edge: the app reaching back to write the
+    %% upload and kick off the pipeline. Every other App interaction
+    %% below is local/forward relative to this.
+    API -.->|"writes .xlsx,<br/>triggers and polls<br/>pipeline run"| VOL
+    VOL -->|"ingest"| BZT
+
+    %% ================= EDGES: interactive recompute =================
+    SVT -->|"reads plan_line<br/>for COALESCE"| WH
+    WH -->|"MERGE into<br/>plan_overlay"| OVERLAY
+    OVERLAY -->|"feeds<br/>COALESCE"| GRULES
+    WH -->|"same rule SQL,<br/>2nd caller:<br/>recompute over<br/>COALESCE(overlay,<br/>plan_line)"| GRULES
+
+    %% ================= EDGES: app reads, consumption =================
+    GRULES -->|"reads"| API
+    GLD --> CONS
+    SIL --> CONS
+
+    %% ================= EDGES: governance grant =================
+    UCWRAP -.-|"grants to the App<br/>service principal"| APP
+
+    %% ================= EDGES: emphasis note, no arrowhead =================
+    WH -.- NOTE1
+
+    %% ================= STYLES: nodes =================
+    classDef cSource fill:#EEF2F7,stroke:#5B6B7C,stroke-width:1px,color:#1F2A37
+    classDef cApp fill:#FFF3EE,stroke:#FF3621,stroke-width:1.5px,color:#7A1F0E
+    classDef cLanding fill:#F4F1EC,stroke:#8C7B6B,stroke-width:1px,color:#3B332B
+    classDef cBronze fill:#F1E4D8,stroke:#B5702F,stroke-width:1px,color:#5C3616
+    classDef cSilver fill:#EDEEF0,stroke:#8C939B,stroke-width:1px,color:#333A42
+    classDef cGold fill:#FBF1D6,stroke:#B8912B,stroke-width:1px,color:#5C4813
+    classDef cEngine fill:#EAF2FB,stroke:#2E6DA4,stroke-width:1.5px,color:#1B3A57
+    classDef cConsumption fill:#EAF7F0,stroke:#2F8F5B,stroke-width:1px,color:#183E29
+    classDef cNote fill:#FFFBE6,stroke:#C9B458,stroke-width:1px,color:#5C4F13,stroke-dasharray: 2 2
+
+    class PLANNER,SYNTH cSource
+    class UI,API cApp
+    class VOL cLanding
+    class BZT cBronze
+    class SVT,OVERLAY cSilver
+    class GRULES,GSNAP cGold
+    class WH cEngine
+    class GENIE,AIBI cConsumption
+    class NOTE1 cNote
+
+    %% ================= STYLES: subgraph containers =================
+    classDef sourceBg fill:#F6F8FA,stroke:#8A97A3,stroke-width:1px
+    classDef landBg fill:#FBF9F6,stroke:#B3A594,stroke-width:1px
+    classDef bronzeBg fill:#FBF4EE,stroke:#C48A4E,stroke-width:1px
+    classDef silverBg fill:#F5F6F7,stroke:#9CA3AC,stroke-width:1px
+    classDef goldBg fill:#FEFAEA,stroke:#C9A63C,stroke-width:1px
+    classDef pipeBg fill:#FCFCFA,stroke:#B8B8AE,stroke-width:1px
+    classDef consBg fill:#F3FBF6,stroke:#6FAE8B,stroke-width:1px
+    classDef appBg fill:#FFF8F5,stroke:#FF3621,stroke-width:1px
+    classDef ucWrapBg fill:#F7F8F9,stroke:#8B96A3,stroke-width:1.5px,stroke-dasharray: 5 3
+
+    class SRC sourceBg
+    class LAND landBg
+    class BRZ bronzeBg
+    class SIL silverBg
+    class GLD goldBg
+    class PIPE pipeBg
+    class CONS consBg
+    class APP appBg
+    class UCWRAP ucWrapBg

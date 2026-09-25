@@ -95,6 +95,13 @@ def _summary(scenario: str) -> SummaryResponse:
 
 
 def _grids(scenario: str, report: dict | None = None) -> RecalcResponse:
+    # NOTE (perf follow-up): each edit runs supply + production + summary, and
+    # summary re-runs the projection twice (working + baseline). With the
+    # closed-form projection each is ~4s, so an edit is ~15s. A safe win is to
+    # compute the working supply once and derive the working colour counts from
+    # its `colour` field, computing only the baseline separately — it needs the
+    # 3-4 tests that monkeypatch `_summary` updated in lockstep, so it is left
+    # as a follow-up rather than destabilising the tested backend here.
     return RecalcResponse(
         supply=_supply(scenario),
         production=_production(scenario),
