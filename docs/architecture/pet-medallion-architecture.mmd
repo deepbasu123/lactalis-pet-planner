@@ -1,36 +1,41 @@
 ---
 title: Lactalis NOVA PET Line Planner - Databricks Medallion Architecture
 ---
-%%{init: {"htmlLabels": false, "flowchart": {"curve": "basis", "nodeSpacing": 40, "rankSpacing": 65, "padding": 20}}}%%
+%%{init: {"htmlLabels": false, "themeCSS": ".edgeLabel rect { opacity: 1 !important; }", "flowchart": {"curve": "basis", "nodeSpacing": 40, "rankSpacing": 65, "padding": 20, "subGraphTitleMargin": {"top": 8, "bottom": 44}}}}%%
 flowchart LR
 
     %% ================= SOURCE =================
+    %% SYNTH declared first: dagre's cycle-breaking DFS starts from the
+    %% first-inserted node, so leading with the edge that flows into the
+    %% pipeline (SYNTH -> VOL) lets the whole Gold/Silver -> Consumption
+    %% direction resolve as forward, leaving only App -> Volume as a
+    %% back-edge instead of four.
     subgraph SRC["SOURCE"]
-        PLANNER(["Supply Planner"])
         SYNTH(["Synthetic Workbook<br/>Generator, demo<br/>data seed"])
+        PLANNER(["Supply Planner"])
     end
 
     %% ================= GOVERNANCE WRAPPER: Unity Catalog =================
     %% Contains every catalog, schema, volume and table in the diagram,
     %% drawn as an outer container so governance reads as an underlying
     %% layer rather than a floating node.
-    subgraph UCWRAP["UNITY CATALOG, governs every catalog,<br/>schema, volume and table below"]
+    subgraph UCWRAP["UNITY CATALOG, governs every catalog, schema, volume and table below"]
 
         subgraph LAND["LANDING"]
             VOL[("UC Volume<br/>deep_test_1_catalog.<br/>lactalis_pet_bronze.landing<br/>uploads/")]
         end
 
-        subgraph PIPE["LAKEFLOW DECLARATIVE<br/>PIPELINE, batch engine"]
-            subgraph BRZ["BRONZE<br/>lactalis_pet_bronze"]
+        subgraph PIPE["LAKEFLOW DECLARATIVE PIPELINE, batch engine"]
+            subgraph BRZ["BRONZE, lactalis_pet_bronze"]
                 BZT["Raw workbook rows,<br/>openpyxl parse plus<br/>ingest metadata"]
             end
 
-            subgraph SIL["SILVER, lactalis_pet_silver<br/>conformed, typed,<br/>DQ-checked"]
+            subgraph SIL["SILVER, lactalis_pet_silver, conformed, typed, DQ-checked"]
                 SVT["sku, week,<br/>parameter, demand,<br/>plan_line,<br/>opening_stock<br/>Expectations:<br/>week alignment,<br/>pack-size,<br/>active SKUs"]
             end
 
-            subgraph GLD["GOLD<br/>lactalis_pet_gold"]
-                GRULES[["21 Business Rules, SQL<br/>projection: stock<br/>projection, 2-wk QA<br/>lag, floor-at-zero<br/>carryforward<br/>week_capacity:<br/>pack-size, SKU-count,<br/>ceiling, maintenance<br/>summary"]]
+            subgraph GLD["GOLD, lactalis_pet_gold"]
+                GRULES[["21 Business Rules, SQL<br/>projection: stock<br/>projection, 2-wk QA lag,<br/>floor-at-zero carryforward<br/>week_capacity:<br/>pack-size, SKU-count,<br/>ceiling, maintenance<br/>summary"]]
                 GSNAP[("projection_snapshot<br/>run-stamped")]
                 GRULES --> GSNAP
             end
@@ -48,7 +53,7 @@ flowchart LR
 
     %% ================= CONSUMPTION: app plus Genie plus AI/BI =================
     subgraph CONS["CONSUMPTION"]
-        subgraph APP["DATABRICKS APP<br/>React + FastAPI, thin<br/>serving layer, zero<br/>business logic"]
+        subgraph APP["DATABRICKS APP, React + FastAPI, thin serving layer, zero business logic"]
             UI["React UI"]
             API["FastAPI Backend"]
             GENIE(["Genie<br/>proxied, embedded<br/>in UI"])
@@ -62,8 +67,8 @@ flowchart LR
     NOTE1["Same rule SQL,<br/>two callers:<br/>pipeline batch plus<br/>warehouse interactive"]
 
     %% ================= EDGES: source =================
-    PLANNER -->|"uploads PET<br/>Traffic Lights<br/>.xlsx workbook"| UI
     SYNTH -->|"seeds demo<br/>workbook direct to<br/>landing, same<br/>medallion path,<br/>no UI"| VOL
+    PLANNER -->|"uploads PET<br/>Traffic Lights<br/>.xlsx workbook"| UI
 
     %% ================= EDGES: upload, write, trigger, ingest =================
     %% The one accepted back-edge: the app reaching back to write the
