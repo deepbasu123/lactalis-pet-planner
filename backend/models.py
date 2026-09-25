@@ -1,9 +1,7 @@
-"""backend/models.py
+"""backend/models.py — request/response models for the thin serving layer.
 
-Pydantic response models for the read API endpoints.  Kept accurate but
-not over-engineered: nested rows use dict[str, Any] because the field set
-is already validated by the service layer and pinning every sub-field here
-adds maintenance surface without adding safety.
+Every response is data read from (or written to) Unity Catalog via the
+warehouse. No business logic lives here.
 """
 from __future__ import annotations
 
@@ -12,21 +10,12 @@ from typing import Any
 from pydantic import BaseModel
 
 
-class ConfigMeta(BaseModel):
-    sku_count: int
-    week_count: int
-    total_production: float
+# ---- reads ----------------------------------------------------------------
 
-
-class ConfigResponse(BaseModel):
+class MetaResponse(BaseModel):
     skus: list[dict[str, Any]]
     weeks: list[dict[str, Any]]
     parameters: list[dict[str, Any]]
-    meta: ConfigMeta
-
-
-class SupplyResponse(BaseModel):
-    rows: list[dict[str, Any]]
 
 
 class ProductionResponse(BaseModel):
@@ -46,61 +35,31 @@ class SummaryResponse(BaseModel):
     original_vs_plan: SummaryOrigVsPlan
 
 
-# ---------------------------------------------------------------------------
-# Edit / save / discard overlay request and response models
-# ---------------------------------------------------------------------------
+class RecalcResponse(BaseModel):
+    """Returned by edit / autofix — the three grids after a recompute."""
+    supply: list[dict[str, Any]]
+    production: ProductionResponse
+    summary: SummaryResponse
+    report: dict[str, Any] | None = None
+
+
+# ---- writes ---------------------------------------------------------------
 
 class EditRequest(BaseModel):
     sku_code: str
     week_key: str
-    qty: float
+    planned_qty: float
+    scenario: str = "working"
 
 
-class EditResponse(BaseModel):
-    status: str
-    sku_code: str
-    week_key: str
-    qty: float
+class ScenarioRequest(BaseModel):
+    scenario: str = "working"
 
 
 class ResetWeekRequest(BaseModel):
     week_key: str
+    scenario: str = "working"
 
-
-class SaveResponse(BaseModel):
-    status: str
-    saved: int  # rows written (or that would have been written in no-live mode)
-
-
-class DiscardResponse(BaseModel):
-    status: str
-    cleared: int  # number of overlay entries removed
-
-
-class AutoFixResponse(BaseModel):
-    status: str
-    changed: list[dict[str, Any]]  # [{sku_code, week_key, planned_qty}] cells changed
-    report: dict[str, Any]         # weeks_changed / cells_zeroed / volume_dropped / ...
-
-
-class RecalcResponse(BaseModel):
-    supply: SupplyResponse
-    production: ProductionResponse
-    summary: SummaryResponse
-
-
-# ---------------------------------------------------------------------------
-# Genie proxy request model
-# ---------------------------------------------------------------------------
-
-class GenieAskRequest(BaseModel):
-    question: str
-    conversation_id: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# PUT /api/parameters, PUT /api/weeks, PUT /api/skus
-# ---------------------------------------------------------------------------
 
 class PutParameterRequest(BaseModel):
     name: str
@@ -114,11 +73,27 @@ class PutWeekRequest(BaseModel):
     note: str | None = None
 
 
-class PutSKURequest(BaseModel):
+class PutSkuRequest(BaseModel):
     sku_code: str
     priority: int | None = None
     status: str | None = None
 
 
-class PutResponse(BaseModel):
-    status: str  # "ok"
+class OkResponse(BaseModel):
+    ok: bool = True
+
+
+class UploadResponse(BaseModel):
+    run_id: str
+
+
+class PipelineStatusResponse(BaseModel):
+    state: str
+    detail: dict[str, Any] | None = None
+
+
+# ---- genie ----------------------------------------------------------------
+
+class GenieAskRequest(BaseModel):
+    question: str
+    conversation_id: str | None = None
