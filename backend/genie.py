@@ -60,11 +60,12 @@ _ROW_CAP = 100  # maximum rows returned in poll() to keep response compact
 
 
 def _client():
-    """Return a cached WorkspaceClient, constructing it on first call."""
+    """Return the shared dual-mode WorkspaceClient (App SP creds, or a local
+    profile via the host-disambiguating factory in backend.warehouse)."""
     global _ws_client
     if _ws_client is None:
-        from databricks.sdk import WorkspaceClient
-        _ws_client = WorkspaceClient()
+        from backend.warehouse import get_workspace_client
+        _ws_client = get_workspace_client()
     return _ws_client
 
 

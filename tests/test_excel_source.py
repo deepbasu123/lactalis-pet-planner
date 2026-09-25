@@ -413,39 +413,9 @@ class TestErrorHandling:
             ex.load_dataset(fixture_path, horizon_weeks=_HORIZON)
 
 
-# ---------------------------------------------------------------------------
-# Integration: the loaded dataset must be a drop-in replacement for
-# data_gen.generate() -- the service layer must run over it without error.
-# ---------------------------------------------------------------------------
-
-class TestServiceLayerCompatibility:
-    def test_build_supply_runs_without_error(self, dataset):
-        from backend.service import build_supply
-
-        supply_df = build_supply(dataset)
-        assert len(supply_df) == 3 * _HORIZON
-        assert set(supply_df["colour"]).issubset({
-            "dark_blue", "light_blue", "green", "amber", "red", "dark_red", "black",
-        })
-
-    def test_build_production_runs_without_error(self, dataset):
-        from backend.service import build_production
-
-        prod = build_production(dataset)
-        assert len(prod["week_totals"]) == _HORIZON
-
-    def test_summary_runs_without_error(self, dataset):
-        from backend.service import build_supply, summary
-
-        supply_df = build_supply(dataset)
-        summ = summary(supply_df, dataset)
-        assert sum(summ["counts"].values()) == 3 * _HORIZON
-
-    def test_excel_export_runs_without_error(self, dataset):
-        """The real-data path must also work through the export feature."""
-        from backend.export import build_excel_export, build_pdf_export
-
-        xlsx = build_excel_export(dataset, {})
-        assert xlsx[:4] == b"PK\x03\x04"
-        pdf = build_pdf_export(dataset, {})
-        assert pdf[:5] == b"%PDF-"
+# NOTE: the former TestServiceLayerCompatibility class was removed here. The
+# pandas service layer (backend/service.py, engine.py, capacity.py) no longer
+# exists — the rule engine now lives in SQL (medallion/gold_sql.py) and is
+# verified by the SQL golden regression (scripts/seed_and_verify.py) and the
+# live API tests (tests/test_api_live.py). backend/excel_source.py itself is
+# still exercised by the parsing tests above.
