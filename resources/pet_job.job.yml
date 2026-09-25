@@ -1,0 +1,32 @@
+# Lakeflow Job: the medallion ETL as a notebook task (serverless).
+# Replaces the former Lakeflow Declarative Pipeline — same Bronze/Silver/Gold
+# output, driven by plain notebook cells. The app triggers this job on upload.
+resources:
+  jobs:
+    pet_job:
+      name: lactalis-pet-medallion-etl
+      tasks:
+        - task_key: medallion_etl
+          notebook_task:
+            notebook_path: ../notebooks/medallion_etl.py
+            base_parameters:
+              repo_root: ${workspace.file_path}
+              catalog: ${var.catalog}
+              bronze_schema: ${var.bronze_schema}
+              silver_schema: ${var.silver_schema}
+              gold_schema: ${var.gold_schema}
+              volume_path: /Volumes/${var.catalog}/${var.bronze_schema}/landing/uploads
+          # Serverless compute; openpyxl comes from the environment below (not %pip,
+          # which would restart Python mid-notebook and truncate the job).
+          environment_key: pet_env
+      environments:
+        - environment_key: pet_env
+          spec:
+            client: "4"
+            dependencies:
+              - openpyxl
+      queue:
+        enabled: true
+      permissions:
+        - level: CAN_VIEW
+          group_name: users

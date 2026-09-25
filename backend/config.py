@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     # injected resource var; PET_WAREHOUSE_ID overrides locally.
     warehouse_id: str = Field(default="", validation_alias="PET_WAREHOUSE_ID")
     warehouse_id_app: str = Field(default="", validation_alias="DATABRICKS_WAREHOUSE_ID")
-    pipeline_id: str = Field(default="", validation_alias="PET_PIPELINE_ID")
+    job_id: str = Field(default="", validation_alias="PET_JOB_ID")
     volume: str = Field(
         default="main.lactalis_pet_bronze.landing",
         validation_alias="PET_VOLUME",

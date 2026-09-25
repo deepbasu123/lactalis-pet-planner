@@ -252,9 +252,9 @@ def api_put_skus(body: PutSkuRequest, scenario: str = "working") -> RecalcRespon
 
 @app.post("/api/upload", response_model=UploadResponse)
 def api_upload(file: UploadFile = File(...)) -> UploadResponse:
-    """Land an uploaded workbook in the Volume and trigger a pipeline update."""
-    if not settings.pipeline_id:
-        raise HTTPException(status_code=503, detail="Pipeline is not configured yet.")
+    """Land an uploaded workbook in the Volume and trigger the medallion ETL job."""
+    if not settings.job_id:
+        raise HTTPException(status_code=503, detail="ETL job is not configured yet.")
     cat, sch, vol = settings.volume.split(".", 2)
     stamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     safe_name = os.path.basename(file.filename or "upload.xlsx")
@@ -267,26 +267,39 @@ def api_upload(file: UploadFile = File(...)) -> UploadResponse:
         logger.exception("Volume upload failed")
         raise HTTPException(status_code=502, detail=f"Upload failed: {exc}") from exc
     try:
-        resp = w.pipelines.start_update(pipeline_id=settings.pipeline_id)
+        run = w.jobs.run_now(job_id=int(settings.job_id))
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Pipeline start failed")
-        raise HTTPException(status_code=502, detail=f"Pipeline start failed: {exc}") from exc
-    return UploadResponse(run_id=resp.update_id)
+        logger.exception("ETL job start failed")
+        raise HTTPException(status_code=502, detail=f"ETL job start failed: {exc}") from exc
+    return UploadResponse(run_id=str(run.run_id))
+
+
+# Map Lakeflow Job run states to the RUNNING/COMPLETED/FAILED the UI expects.
+_JOB_LIFECYCLE = {
+    "PENDING": "RUNNING", "RUNNING": "RUNNING", "TERMINATING": "RUNNING",
+    "QUEUED": "RUNNING", "WAITING_FOR_RETRY": "RUNNING",
+    "SKIPPED": "FAILED", "INTERNAL_ERROR": "FAILED",
+}
 
 
 @app.get("/api/pipeline/status", response_model=PipelineStatusResponse)
 def api_pipeline_status(run_id: str) -> PipelineStatusResponse:
-    if not settings.pipeline_id:
-        raise HTTPException(status_code=503, detail="Pipeline is not configured yet.")
+    """Status of an ETL job run, mapped to RUNNING/COMPLETED/FAILED for the UI."""
+    if not settings.job_id:
+        raise HTTPException(status_code=503, detail="ETL job is not configured yet.")
     w = warehouse.get_workspace_client()
     try:
-        upd = w.pipelines.get_update(pipeline_id=settings.pipeline_id, update_id=run_id)
+        run = w.jobs.get_run(run_id=int(run_id))
     except Exception as exc:  # unknown/invalid run_id -> 404, not an opaque 500
-        raise HTTPException(status_code=404, detail=f"No pipeline update '{run_id}' found.") from exc
-    u = upd.update
-    state = u.state.value if (u and u.state) else "UNKNOWN"
-    detail = {"creation_time": getattr(u, "creation_time", None)} if u else None
-    return PipelineStatusResponse(state=state, detail=detail)
+        raise HTTPException(status_code=404, detail=f"No ETL run '{run_id}' found.") from exc
+    st = run.state
+    life = st.life_cycle_state.value if (st and st.life_cycle_state) else "UNKNOWN"
+    result = st.result_state.value if (st and st.result_state) else None
+    if life == "TERMINATED":
+        state = "COMPLETED" if result == "SUCCESS" else "FAILED"
+    else:
+        state = _JOB_LIFECYCLE.get(life, life)
+    return PipelineStatusResponse(state=state, detail={"life_cycle_state": life, "result_state": result})
 
 
 # ---------------------------------------------------------------------------

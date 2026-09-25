@@ -138,8 +138,8 @@ def test_autofix_runs_and_returns_report(monkeypatch):
     assert r.json()["report"]["weeks_changed"] == 3
 
 
-def test_upload_503_without_pipeline(monkeypatch):
-    monkeypatch.setattr(m.settings, "pipeline_id", "")
+def test_upload_503_without_job(monkeypatch):
+    monkeypatch.setattr(m.settings, "job_id", "")
     r = client.post("/api/upload", files={"file": ("x.xlsx", b"data", "application/octet-stream")})
     assert r.status_code == 503
 

@@ -17,8 +17,8 @@ env:
     value: "<warehouse_id>"
   - name: PET_WAREHOUSE_ID
     value: "<warehouse_id>"
-  - name: PET_PIPELINE_ID
-    value: "<pipeline_id>"
+  - name: PET_JOB_ID
+    value: "<job_id>"
   - name: PET_VOLUME
     value: "main.lactalis_pet_bronze.landing"
   - name: PET_GENIE_SPACE_ID

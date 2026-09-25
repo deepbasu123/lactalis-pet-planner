@@ -3,36 +3,35 @@
 
 Single entry point. Steps (each logged):
   1.  Bootstrap UC: 3 schemas (bronze/silver/gold), landing Volume, plan_overlay.
-  2.  Bundle deploy: sync source + create/refresh the Lakeflow pipeline.
+  2.  Bundle deploy: sync source + create/refresh the medallion ETL Job.
   3.  Seed: generate a synthetic workbook and upload it to the landing Volume
       (skipped when --data-file points at a real "PET Traffic Lights" workbook,
-      which is uploaded instead — it flows through the identical pipeline).
-  4.  Run the pipeline (start update, poll to completion) -> Bronze/Silver/Gold.
+      which is uploaded instead — it flows through the identical notebooks).
+  4.  Run the ETL job (notebooks: Bronze -> Silver -> Gold), poll to completion.
   5.  Build the React frontend (npm ci && npm run build).
   6.  Ensure the Genie space over Silver + Gold; write resolved app.yaml.
   7.  Create + deploy the Databricks App (thin serving layer).
   8.  Grant the app SP: USE CATALOG; USE SCHEMA+SELECT on 3 schemas + MODIFY on
-      silver; READ VOLUME; CAN_USE warehouse; CAN_MANAGE pipeline; CAN_RUN Genie.
+      silver; READ/WRITE VOLUME; CAN_USE warehouse; CAN_MANAGE_RUN job; CAN_RUN Genie.
   9.  Health-check the app.
 
 The rule engine is NOT here — it lives in medallion/gold_sql.py and runs in the
-pipeline (batch) and on the warehouse (interactive). This script only wires
+ETL notebooks (batch) and on the warehouse (interactive). This script only wires
 infrastructure.
 
-    .venv/bin/python -m scripts.deploy --profile DEFAULT
+    .venv/bin/python -m scripts.deploy --profile DEFAULT --catalog <catalog> --warehouse-id <id>
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from scripts.seed_and_verify import make_client, run
+from scripts.seed_and_verify import make_client
 from scripts.bootstrap_uc import bootstrap, BRONZE, SILVER, GOLD
 from scripts.seed_volume import upload_synth
 from scripts.genie_medallion import ensure_space
@@ -53,7 +52,7 @@ APP_DESCRIPTION = (
 # ---------------------------------------------------------------------------
 
 def render_app_yaml(catalog: str, silver: str, gold: str, warehouse_id: str,
-                    pipeline_id: str, volume: str, genie_space_id: str) -> str:
+                    job_id: str, volume: str, genie_space_id: str) -> str:
     return (
         "command:\n"
         '  - "uvicorn"\n  - "backend.main:app"\n  - "--host"\n  - "0.0.0.0"\n  - "--port"\n  - "8000"\n'
@@ -63,7 +62,7 @@ def render_app_yaml(catalog: str, silver: str, gold: str, warehouse_id: str,
         f'  - name: PET_GOLD_SCHEMA\n    value: "{gold}"\n'
         f'  - name: DATABRICKS_WAREHOUSE_ID\n    value: "{warehouse_id}"\n'
         f'  - name: PET_WAREHOUSE_ID\n    value: "{warehouse_id}"\n'
-        f'  - name: PET_PIPELINE_ID\n    value: "{pipeline_id}"\n'
+        f'  - name: PET_JOB_ID\n    value: "{job_id}"\n'
         f'  - name: PET_VOLUME\n    value: "{volume}"\n'
         f'  - name: PET_GENIE_SPACE_ID\n    value: "{genie_space_id}"\n'
     )
@@ -80,35 +79,38 @@ def bundle(profile: str, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-def pipeline_id_from_bundle(profile: str) -> str:
-    """Resolve the deployed pipeline id from `bundle summary --output json`."""
+def job_id_from_bundle(profile: str) -> str:
+    """Resolve the deployed job id from `bundle summary --output json`."""
     out = subprocess.run(
         ["databricks", "bundle", "summary", "--target", "dev", "--profile", profile, "--output", "json"],
         cwd=str(PROJECT_ROOT), check=True, text=True, capture_output=True,
     ).stdout
     data = json.loads(out)
-    pl = data.get("resources", {}).get("pipelines", {}).get("pet_pipeline", {})
-    pid = pl.get("id")
-    if not pid:
-        raise RuntimeError("Could not resolve pet_pipeline id from bundle summary")
-    return pid
+    jb = data.get("resources", {}).get("jobs", {}).get("pet_job", {})
+    jid = jb.get("id")
+    if not jid:
+        raise RuntimeError("Could not resolve pet_job id from bundle summary")
+    return str(jid)
 
 
-def run_pipeline(w, pipeline_id: str, timeout_s: int = 1200) -> None:
-    upd = w.pipelines.start_update(pipeline_id=pipeline_id)
-    update_id = upd.update_id
-    log.info("  pipeline update %s started", update_id)
+def run_job(w, job_id: str, timeout_s: int = 1800) -> None:
+    run = w.jobs.run_now(job_id=int(job_id))
+    run_id = run.run_id
+    log.info("  ETL job run %s started", run_id)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        u = w.pipelines.get_update(pipeline_id=pipeline_id, update_id=update_id).update
-        state = str(u.state)
-        if "COMPLETED" in state:
-            log.info("  pipeline update COMPLETED")
-            return
-        if any(s in state for s in ("FAILED", "CANCELED")):
-            raise RuntimeError(f"pipeline update ended in state {state}")
+        r = w.jobs.get_run(run_id=run_id)
+        life = r.state.life_cycle_state.value if (r.state and r.state.life_cycle_state) else "UNKNOWN"
+        if life == "TERMINATED":
+            result = r.state.result_state.value if r.state.result_state else "?"
+            if result == "SUCCESS":
+                log.info("  ETL job run COMPLETED")
+                return
+            raise RuntimeError(f"ETL job run ended in result_state {result}")
+        if life in ("SKIPPED", "INTERNAL_ERROR"):
+            raise RuntimeError(f"ETL job run ended in life_cycle_state {life}")
         time.sleep(10)
-    raise RuntimeError("pipeline update timed out")
+    raise RuntimeError("ETL job run timed out")
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +120,7 @@ def run_pipeline(w, pipeline_id: str, timeout_s: int = 1200) -> None:
 _SYNC_INCLUDES = ("frontend/dist/**",)
 _SYNC_EXCLUDES = (
     "node_modules", ".venv", "__pycache__", ".git", ".claude", ".claude-flow",
-    ".agents", ".swarm", ".superpowers", "docs", "pipeline", "scripts", "tests",
+    ".agents", ".swarm", ".superpowers", "docs", "notebooks", "scripts", "tests",
     "resources", "*.pyc", "*.xlsx",
 )
 
@@ -168,7 +170,7 @@ def resolve_sp(w, app_name: str) -> str | None:
     return a.get("service_principal_client_id") or a.get("service_principal_name")
 
 
-def grant_all(w, app_name: str, catalog: str, warehouse_id: str, pipeline_id: str,
+def grant_all(w, app_name: str, catalog: str, warehouse_id: str, job_id: str,
               genie_space_id: str, volume: str) -> None:
     from databricks.sdk.service.catalog import PermissionsChange, Privilege, SecurableType
     from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
@@ -204,11 +206,11 @@ def grant_all(w, app_name: str, catalog: str, warehouse_id: str, pipeline_id: st
         log.warning("  warehouse grant failed: %s", e)
 
     try:
-        w.api_client.do("PATCH", f"/api/2.0/permissions/pipelines/{pipeline_id}",
-                        body={"access_control_list": [{"service_principal_name": sp, "permission_level": "CAN_RUN"}]})
-        log.info("  granted CAN_RUN on pipeline")
+        w.api_client.do("PATCH", f"/api/2.0/permissions/jobs/{job_id}",
+                        body={"access_control_list": [{"service_principal_name": sp, "permission_level": "CAN_MANAGE_RUN"}]})
+        log.info("  granted CAN_MANAGE_RUN on ETL job")
     except Exception as e:
-        log.warning("  pipeline grant failed: %s", e)
+        log.warning("  job grant failed: %s", e)
 
     try:
         w.api_client.do("PATCH", f"/api/2.0/permissions/genie/{genie_space_id}",
@@ -252,7 +254,7 @@ def main() -> int:
     ap.add_argument("--app-name", default="lactalis-pet-planner-v2")
     ap.add_argument("--data-file", default=None, help="real workbook to seed instead of synthetic")
     ap.add_argument("--skip-frontend-build", action="store_true")
-    ap.add_argument("--skip-pipeline-run", action="store_true", help="reuse already-materialised gold")
+    ap.add_argument("--skip-etl-run", action="store_true", help="reuse already-materialised gold")
     args = ap.parse_args()
 
     w = make_client(args.profile)
@@ -265,10 +267,10 @@ def main() -> int:
     log.info("[1] bootstrap UC (schemas, volume, plan_overlay)")
     bootstrap(w, wid, catalog)
 
-    log.info("[2] bundle deploy (pipeline)")
-    bundle(args.profile, "deploy")
-    pipeline_id = pipeline_id_from_bundle(args.profile)
-    log.info("  pipeline id = %s", pipeline_id)
+    log.info("[2] bundle deploy (ETL job)")
+    bundle(args.profile, "deploy", "--var", f"catalog={catalog}")
+    job_id = job_id_from_bundle(args.profile)
+    log.info("  ETL job id = %s", job_id)
 
     if args.data_file:
         log.info("[3] upload real workbook %s", args.data_file)
@@ -278,11 +280,11 @@ def main() -> int:
         log.info("[3] seed synthetic workbook -> volume")
         upload_synth(w, uploads)
 
-    if args.skip_pipeline_run:
-        log.info("[4] skip pipeline run")
+    if args.skip_etl_run:
+        log.info("[4] skip ETL job run")
     else:
-        log.info("[4] run pipeline (Bronze->Silver->Gold)")
-        run_pipeline(w, pipeline_id)
+        log.info("[4] run ETL job (Bronze->Silver->Gold)")
+        run_job(w, job_id)
 
     if args.skip_frontend_build:
         log.info("[5] skip frontend build")
@@ -294,19 +296,19 @@ def main() -> int:
     log.info("[6] ensure Genie space + write app.yaml")
     genie_id = ensure_space(w, catalog, SILVER, GOLD, wid)
     (PROJECT_ROOT / "app.yaml").write_text(
-        render_app_yaml(catalog, SILVER, GOLD, wid, pipeline_id, volume, genie_id), encoding="utf-8")
+        render_app_yaml(catalog, SILVER, GOLD, wid, job_id, volume, genie_id), encoding="utf-8")
 
     log.info("[7] deploy app")
     url = deploy_app(w, args.app_name, args.profile)
 
     log.info("[8] grants")
-    grant_all(w, args.app_name, catalog, wid, pipeline_id, genie_id, volume)
+    grant_all(w, args.app_name, catalog, wid, job_id, genie_id, volume)
 
     log.info("[9] health check")
     health_check(w, args.app_name)
 
     log.info("=== Deploy complete ===  App: %s", url or "(see Apps console)")
-    log.info("Genie space: %s | Pipeline: %s", genie_id, pipeline_id)
+    log.info("Genie space: %s | ETL job: %s", genie_id, job_id)
     return 0
 
 
