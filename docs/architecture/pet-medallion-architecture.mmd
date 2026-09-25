@@ -1,7 +1,7 @@
 ---
 title: Lactalis NOVA PET Line Planner - Databricks Medallion Architecture
 ---
-%%{init: {"htmlLabels": false, "themeCSS": ".edgeLabel rect { opacity: 1 !important; }", "flowchart": {"curve": "basis", "nodeSpacing": 40, "rankSpacing": 65, "padding": 20, "subGraphTitleMargin": {"top": 8, "bottom": 44}}}}%%
+%%{init: {"htmlLabels": false, "themeCSS": ".edgeLabel rect { opacity: 1 !important; }", "flowchart": {"curve": "basis", "nodeSpacing": 40, "rankSpacing": 65, "padding": 20}}}%%
 flowchart LR
 
     %% ================= SOURCE =================
@@ -19,7 +19,7 @@ flowchart LR
     %% Contains every catalog, schema, volume and table in the diagram,
     %% drawn as an outer container so governance reads as an underlying
     %% layer rather than a floating node.
-    subgraph UCWRAP["UNITY CATALOG, governs every catalog, schema, volume and table below"]
+    subgraph UCWRAP["UNITY CATALOG"]
 
         subgraph LAND["LANDING"]
             VOL[("UC Volume<br/>deep_test_1_catalog.<br/>lactalis_pet_bronze.landing<br/>uploads/")]
@@ -30,8 +30,8 @@ flowchart LR
                 BZT["Raw workbook rows,<br/>openpyxl parse plus<br/>ingest metadata"]
             end
 
-            subgraph SIL["SILVER, lactalis_pet_silver, conformed, typed, DQ-checked"]
-                SVT["sku, week,<br/>parameter, demand,<br/>plan_line,<br/>opening_stock<br/>Expectations:<br/>week alignment,<br/>pack-size,<br/>active SKUs"]
+            subgraph SIL["SILVER, lactalis_pet_silver"]
+                SVT["Conformed, typed,<br/>DQ-checked tables:<br/>sku, week,<br/>parameter, demand,<br/>plan_line,<br/>opening_stock<br/>Expectations:<br/>week alignment,<br/>pack-size,<br/>active SKUs"]
             end
 
             subgraph GLD["GOLD, lactalis_pet_gold"]
