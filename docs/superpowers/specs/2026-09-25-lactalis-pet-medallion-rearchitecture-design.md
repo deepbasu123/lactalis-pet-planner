@@ -164,3 +164,30 @@ scoping (single-user demo semantics acceptable).
 
 Databricks-native throughout; Python preferred; skills-first; no fabricated facts; every
 output verified; nothing sent externally without approval.
+
+## 12. Implementation reconciliation (what actually shipped vs this design)
+
+Recorded after an independent verifier checked the build against the live workspace.
+
+- **Rule coverage is 17/21, matching the original engine — not all 21.** `gold_sql.py`
+  reproduces the rules the original app computed (RULE-001–015, 020, 021),
+  number-for-number. **RULE-016** (4-week effective-demand horizon) is **not** applied:
+  demand is `GREATEST(forecast, sales_order)` for every week (the original did the same;
+  the `demand_horizon` parameter is present but unused for this switch). The §4
+  `effective_demand` step was **not built**. **RULE-017** (add distributor demand) is a
+  business candidate — `distr_demand_planned/tlb` reach Silver but are not consumed.
+  **RULE-018/019** (manual material holds / ETA buffer) are planner data-entry, not
+  computed rules. These are clean, parameter-gated follow-ups, not regressions.
+- **Projection is a closed-form window computation, not a recursive CTE.** The recursive
+  CTE (design §3) was correct but ~95s on the warehouse / ~8min on pipeline compute. It
+  was replaced with the Lindley closed form (SUM/MIN/LAG windows), proven 0-mismatch vs
+  the recursive output and ~4s. See `medallion/gold_sql.py`.
+- **`colours.ts` was stripped, not deleted** (design §6). It now holds only a colour→hex
+  lookup + a contrast helper; no rule computation remains in the client.
+- **Interactive edit latency ≈ 15–17s, not 1–2s.** A single grid (`/api/supply`) is ~4s;
+  an edit returns supply + production + summary, and summary re-runs the projection twice
+  (working + baseline). The safe optimisation (derive the working colour counts from the
+  supply rows already fetched, compute only the baseline separately) is documented in
+  `backend/main.py::_grids` and left as a follow-up because it needs the 3–4 tests that
+  monkeypatch `_summary` updated in lockstep.
+- **`/api/pipeline/status`** now returns 404 (not 500) for an unknown `run_id`.

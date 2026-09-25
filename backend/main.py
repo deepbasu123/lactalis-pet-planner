@@ -279,7 +279,10 @@ def api_pipeline_status(run_id: str) -> PipelineStatusResponse:
     if not settings.pipeline_id:
         raise HTTPException(status_code=503, detail="Pipeline is not configured yet.")
     w = warehouse.get_workspace_client()
-    upd = w.pipelines.get_update(pipeline_id=settings.pipeline_id, update_id=run_id)
+    try:
+        upd = w.pipelines.get_update(pipeline_id=settings.pipeline_id, update_id=run_id)
+    except Exception as exc:  # unknown/invalid run_id -> 404, not an opaque 500
+        raise HTTPException(status_code=404, detail=f"No pipeline update '{run_id}' found.") from exc
     u = upd.update
     state = u.state.value if (u and u.state) else "UNKNOWN"
     detail = {"creation_time": getattr(u, "creation_time", None)} if u else None

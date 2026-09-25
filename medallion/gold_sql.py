@@ -3,10 +3,25 @@
 The PET Line Planner rule engine, expressed as parameterised Databricks SQL.
 
 This module builds the SQL that computes the Gold layer from the Silver tables.
-It is the one place the 21 business rules (RULE-001 .. RULE-021) live. It is
-imported by BOTH the Lakeflow pipeline (batch materialisation) and the FastAPI
-app (interactive recompute on the serverless warehouse), so there is exactly one
-implementation of the maths.
+It is the one place the projection + capacity rules live, imported by BOTH the
+Lakeflow pipeline (batch materialisation) and the FastAPI app (interactive
+recompute on the serverless warehouse), so there is exactly one implementation
+of the maths.
+
+Rule coverage (this reproduces the ORIGINAL app's computed rule set, proven
+number-for-number at commit b081e51 -- it does not add rules the original
+lacked):
+  Implemented: RULE-001/002 (pack-size / SKU-count), 003/004 (ceilings),
+  005 (configurable params), 006 (maintenance), 007 (changeovers), 008 (2-week
+  QA receipt lag), 009/010 (floor-at-zero carryforward), 011 (reaction-window
+  lost sale), 012 (traffic-light colours), 013/014/015 (max-cover / black
+  over-cover), 020/021 (locked weeks / priority).
+  Deferred (also absent from the original app): RULE-016 -- demand is
+  GREATEST(forecast, sales_order) for EVERY week; the 4-week effective-demand
+  horizon (forecast-only beyond demand_horizon) is not applied. RULE-017
+  (add distributor demand) -- a business "candidate"; distr_demand_planned/tlb
+  land in Silver but are not consumed. RULE-018/019 (manual material holds / ETA
+  buffer) -- planner data-entry, not a computed rule.
 
 Design notes
 ------------
